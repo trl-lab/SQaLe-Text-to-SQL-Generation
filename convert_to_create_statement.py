@@ -173,7 +173,3 @@ for i, sqls in enumerate(tqdm(all_statements, desc="Processing statements")):
             db_path.unlink(missing_ok=True)
 
         print(f"Error processing statements for dataset {i}: {e}")
-
-    if i % 1000 == 0 and i > 0:
-        print(f"Processed dataset {i}")
-        break
