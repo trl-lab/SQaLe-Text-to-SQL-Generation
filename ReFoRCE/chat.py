@@ -105,3 +105,33 @@ class GPTChat(BaseChat):
 
         self.messages.append({"role": "assistant", "content": main_content})
         return main_content
+    
+from ollama import Client
+
+class OllamaChat(BaseChat):
+    def __init__(self, model: str = "llama3.1:8b-instruct", temperature: float = 0.7, host: str | None = None):
+        super().__init__(model, temperature)
+        # Allow override via arg or env; fall back to default local server
+        self.client = Client(host=os.environ.get("OLLAMA_HOST", host or "http://localhost:11434"))
+
+    def get_response(self, prompt) -> str:
+        # Track the user message just like GPTChat
+        self.messages.append({"role": "user", "content": prompt})
+        try:
+            # Ollama expects: [{"role": "...", "content": "..."}]
+            # You can pass additional options here if you like (top_p, num_ctx, etc.)
+            resp = self.client.chat(
+                model=self.model,
+                messages=self.messages,
+                options={
+                    "temperature": self.temperature
+                },
+            )
+            main_content = resp["message"]["content"]
+        except Exception as e:
+            # Let BaseChat’s retry loop handle it
+            raise e
+
+        # Track assistant response
+        self.messages.append({"role": "assistant", "content": main_content})
+        return main_content
