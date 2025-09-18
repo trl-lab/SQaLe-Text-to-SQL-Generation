@@ -394,3 +394,107 @@ class REFORCE:
         shutil.copy2(os.path.join(search_directory, first_key), self.complete_sql_save_path)
         shutil.copy2(os.path.join(search_directory, sql_paths[first_key]), self.complete_csv_save_path)
         shutil.copy2(os.path.join(search_directory, first_key.replace(self.sql_save_name, self.log_save_name)), self.complete_log_save_path)
+
+    @staticmethod
+    def _clean_to_single_sql(text: str) -> str:
+        """
+        Best-effort to extract exactly one SQL statement from a model response.
+        - Strips code fences.
+        - If multiple statements appear, prefers the longest valid-looking one.
+        """
+        import re
+
+        if text is None:
+            return ""
+
+        # Remove markdown code fences if present
+        text = re.sub(r"^```(?:sql)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE | re.MULTILINE)
+
+        # Split by semicolons but keep semicolons for clarity
+        parts = [p.strip() for p in text.split(";") if p.strip()]
+        if not parts:
+            return text.strip()
+
+        # Reattach the semicolon to each candidate
+        candidates = [p + ";" for p in parts]
+
+        # Heuristic: choose the longest candidate that starts with common SQL verbs
+        verbs = ("select", "with", "insert", "update", "delete", "create", "replace")
+        ranked = sorted(
+            (c for c in candidates if c.strip().lower().startswith(verbs)),
+            key=len,
+            reverse=True
+        )
+        return (ranked[0] if ranked else candidates[0]).strip()
+
+    def get_sql_from_schema(self, question: str, schema: str, *, table_info: str = "", api_hint: str = None) -> str:
+        """
+        Minimal, non-executing path: returns a single SQL statement for (schema, question).
+        Uses self.chat_session + self.prompt_class. Does NOT hit the database.
+        """
+        api = api_hint or self.api or "sqlite"
+        # A short "format CSV" hint keeps the model focused but is optional
+        format_csv_hint = "Return well-named columns relevant to the question."
+
+        # Reuse your existing prompt builder (self_refine/gen use the same core prompt)
+        prompt = self.prompt_class.get_self_refine_prompt(
+            table_info or "Database schema provided below.",
+            task=question,
+            pre_info="",                   # no exploration context
+            question=question,
+            api=api,
+            format_csv=format_csv_hint,
+            table_struct=schema,
+            omnisql_format_pth=None
+        )
+
+        # Ask for exactly one SQL
+        max_try = getattr(self, "max_try", 3)
+        last_txt = ""
+        while max_try > 0:
+            resp = self.chat_session.get_model_response(prompt, "sql")
+            # If your GPTChat returns a list of strings, take the first; otherwise coerce to str
+            text = (resp[0] if isinstance(resp, list) and resp else resp) or ""
+            last_txt = self.chat_session.messages[-1]["content"]
+            sql = self._clean_to_single_sql(text)
+            if sql:
+                return sql
+            # tighten the instruction if it wasn’t a clean SQL
+            prompt = "Please output ONE complete SQL query only. No commentary."
+            max_try -= 1
+
+        # Fallback: still try to salvage something from the last model content
+        return self._clean_to_single_sql(last_txt)
+
+    @classmethod
+    def quick_sql(
+        cls,
+        schema: str,
+        question: str,
+        *,
+        prompt_class: Type[Prompts] = Prompts,
+        chat_session: GPTChat = None,
+        api_hint: str = "sqlite"
+    ) -> str:
+        """
+        Static one-liner: create a lightweight REFORCE and return a single SQL.
+        No DB, no files, no execution.
+        """
+        # Minimal no-op env/paths since we don't execute or write anything
+        dummy_dir = "."
+        dummy_env = None
+        if chat_session is None:
+            # You can change the model here to match your setup
+            chat_session = GPTChat(azure=None, model="gpt-4o-mini")
+
+        r = cls(
+            db_path=dummy_dir,
+            sql_data=api_hint,
+            search_directory=dummy_dir,
+            prompt_class=prompt_class,
+            sql_env=dummy_env,
+            chat_session_pre=chat_session,   # not used here
+            chat_session=chat_session,
+            log_save_path="quick_sql"
+        )
+        return r.get_sql_from_schema(question=question, schema=schema, table_info="", api_hint=api_hint)
