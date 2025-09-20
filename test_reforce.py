@@ -19,11 +19,7 @@ CREATE TABLE items(
 question = "List the top 5 customers by total spend."
 
 # One-liner
-sql = get_best_sql_with_voting(DDL, question, num_votes=3, model="qwen3:30b", api_hint="local")
+sql = get_best_sql_with_voting(DDL, question, num_votes=3, model="gpt-oss:20b", api_hint="local")
 
 print("Generated SQL:")
 print(sql)
-
-# Or, if you already constructed a REFORCE with your own chat sessions:
-# engine = REFORCE(...existing init...)
-# sql = engine.get_sql_from_schema(question, DDL)

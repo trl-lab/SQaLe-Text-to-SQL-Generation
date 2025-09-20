@@ -24,8 +24,9 @@ class BaseChat(ABC):
                 continue
             code_blocks = extract_all_blocks(response, code_format)
         if max_try == 0 or code_blocks == []:
-            print(f"get_model_response() exit, max_try: {max_try}, code_blocks: {code_blocks}")
-            sys.exit(0)
+            print(f"get_model_response() exit, max_try: {max_try}, code_blocks: {code_blocks}\n\n")
+            print(f"Prompt was:\n{prompt}")
+            print(f"Final response was:\n{response}")
         return code_blocks
 
     def get_model_response_txt(self, prompt) -> str:
