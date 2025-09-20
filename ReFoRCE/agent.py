@@ -474,36 +474,3 @@ class REFORCE:
 
         # Fallback: still try to salvage something from the last model content
         return self._clean_to_single_sql(last_txt)
-
-    @classmethod
-    def quick_sql(
-        cls,
-        schema: str,
-        question: str,
-        *,
-        prompt_class: Type[Prompts] = Prompts,
-        chat_session = None,
-        api_hint: str = "sqlite"
-    ) -> str:
-        """
-        Static one-liner: create a lightweight REFORCE and return a single SQL.
-        No DB, no files, no execution.
-        """
-        # Minimal no-op env/paths since we don't execute or write anything
-        dummy_dir = "."
-        dummy_env = None
-        if chat_session is None:
-            # You can change the model here to match your setup
-            chat_session = GPTChat(azure=None, model="gpt-4o-mini")
-
-        r = cls(
-            db_path=dummy_dir,
-            sql_data=api_hint,
-            search_directory=dummy_dir,
-            prompt_class=prompt_class,
-            sql_env=dummy_env,
-            chat_session_pre=chat_session,   # not used here
-            chat_session=chat_session,
-            log_save_path="quick_sql"
-        )
-        return r.get_sql_from_schema(question=question, schema=schema, table_info="", api_hint=api_hint)
