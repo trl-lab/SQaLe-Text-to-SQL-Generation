@@ -1,7 +1,7 @@
 import sqlite3
 import io
 import csv
-from utils import hard_cut
+from ReFoRCE.utils import hard_cut
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import snowflake.connector

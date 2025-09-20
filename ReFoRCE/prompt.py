@@ -36,7 +36,7 @@ class Prompts:
         elif api == "bigquery":
             return "When performing a UNION operation on many tables with similar prefix, you can use a wildcard table to simplify your query. e.g., SELECT col1, col2 FROM `project_id.dataset_id.table_prefix*` WHERE _TABLE_SUFFIX IN ('table1_suffix', 'table2_suffix');. Avoid manually listing tables unless absolutely necessary.\n"
         else:
-            return ""
+            return "This is the table structure: " + table_struct + "\n"
     def get_prompt_fuzzy_query(self):
         return "For string-matching scenarios, if the string is decided, don't use fuzzy query. e.g. Get the object's title contains the word \"book\"\nHowever, if the string is not decided, you may use fuzzy query and ignore upper or lower case. e.g. Get articles that mention \"education\".\n"
     def get_prompt_decimal_places(self):

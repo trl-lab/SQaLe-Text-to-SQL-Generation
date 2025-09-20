@@ -1,4 +1,5 @@
 from ReFoRCE.agent import REFORCE
+from ReFoRCE.best_sql import get_best_sql_with_voting
 
 DDL = """
 CREATE TABLE orders(
@@ -18,7 +19,9 @@ CREATE TABLE items(
 question = "List the top 5 customers by total spend."
 
 # One-liner
-sql = REFORCE.quick_sql(schema=DDL, question=question)
+sql = get_best_sql_with_voting(DDL, question, num_votes=3, model="qwen3:30b", api_hint="local")
+
+print("Generated SQL:")
 print(sql)
 
 # Or, if you already constructed a REFORCE with your own chat sessions:

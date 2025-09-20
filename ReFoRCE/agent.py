@@ -1,13 +1,15 @@
-from utils import hard_cut, get_values_from_table, get_api_name, filter_bijection_like_dict, compare_pandas_table, is_valid_result, get_sqlite_path, split_sql
-from sql import SqlEnv
+import sys
+import os
+from ReFoRCE.utils import hard_cut, get_values_from_table, get_api_name, filter_bijection_like_dict, compare_pandas_table, is_valid_result, get_sqlite_path, split_sql
+from ReFoRCE.sql import SqlEnv
 import pandas as pd
 from io import StringIO
 import os
 import shutil
 import csv
-from prompt import Prompts
+from ReFoRCE.prompt import Prompts
 from typing import Type
-from chat import GPTChat
+from ReFoRCE.chat import GPTChat
 import sys
 csv.field_size_limit(sys.maxsize)
 
@@ -20,7 +22,9 @@ class REFORCE:
         self.empty_result = "No data found for the specified query.\n"
 
         self.api = get_api_name(sql_data)
-        self.sqlite_path = get_sqlite_path(db_path, sql_data, db_id, task)
+
+        # self.sqlite_path = get_sqlite_path(db_path, sql_data, db_id, task)
+        self.sqlite_path = db_path
 
         self.sql_id = log_save_path
 
@@ -287,20 +291,20 @@ class REFORCE:
                 f.write(response)
 
     def model_vote(self, result, sql_paths, search_directory, args, table_info, task):
-        chat_session = GPTChat(args.azure, args.model_vote)
+        chat_session = self.chat_session
         max_value = max(result.values())
         max_dict = {k: v for k, v in result.items() if v == max_value}
-        # print(max_dict)
 
-        prompt = f"You are gieven DB info, task and candidate SQLs and their results. You should choose the most correct one based on database info:\n{table_info}. The task is: {task}. Here are some candidate sqls and answers: \n"
+        prompt = f"You are gieven DB info, task and candidate SQLs. You should choose the most correct one based on database info:\n{table_info}. The task is: {task}. Here are some candidate sqls and answers: \n"
         for sql, counts in max_dict.items():
             sql_path = os.path.join(search_directory, sql)
             csv_path = os.path.join(search_directory, sql_paths[sql])
 
-            if os.path.exists(sql_path) and os.path.exists(csv_path):
+            if os.path.exists(sql_path):
                 prompt += "SQL file name: " + sql + "\n"
                 with open(sql_path) as f:
                     prompt += f.read()
+            if os.path.exists(csv_path):
                 prompt += "CSV file name: " + sql_paths[sql] + "\n"
                 with open(csv_path) as f:
                     prompt += hard_cut(f.read(), 5000)
@@ -312,7 +316,6 @@ class REFORCE:
         response = chat_session.get_model_response(prompt, "plaintext")
         while max_try > 0:
             if not response or not isinstance(response, list) or ".sql" not in response[0]:
-                print(f"{search_directory}, remained max_try for voting: {max_try}, {response}")
                 response = chat_session.get_model_response("Please output the name of sql in ```plaintext\nxxx.sql``` format. You should not ingnore 'plaintext'.", "plaintext")
             else:
                 break
@@ -332,6 +335,9 @@ class REFORCE:
         sql_env.close_db()
 
     def vote_result(self, search_directory, args, sql_paths, table_info, task):
+
+        # TO-DO: Rewrite this function so that it works without checking the values and their correctness
+
         # filter answer
         result = {}
         result_name = {}
@@ -357,6 +363,10 @@ class REFORCE:
             result_name = filter_bijection_like_dict(result_name)
             for key, value in result_name.items():
                 result[key.split("/")[-1].replace(".csv", ".sql")] = len(value)
+        else:
+            for key, value in sql_paths.items():
+                result_all[key] = 0
+
         if not result:
             if not result_all and not all_values:
                 print(f"{search_directory} empty results")
@@ -364,7 +374,6 @@ class REFORCE:
             elif args.model_vote:
                 assert all(v == 0 for k, v in result_all.items()), result
                 result_all = {k: v + 1 for k, v in result_all.items()}
-                # print(result_all)
                 self.model_vote(result_all, sql_paths, search_directory, args, table_info, task)
             elif args.final_choose:
                 csv_pth = all_values[0]
@@ -473,7 +482,7 @@ class REFORCE:
         question: str,
         *,
         prompt_class: Type[Prompts] = Prompts,
-        chat_session: GPTChat = None,
+        chat_session = None,
         api_hint: str = "sqlite"
     ) -> str:
         """

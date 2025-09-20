@@ -1,6 +1,6 @@
 import sys
 from abc import ABC, abstractmethod
-from utils import extract_all_blocks
+from ReFoRCE.utils import extract_all_blocks
 
 class BaseChat(ABC):
     def __init__(self, model: str, temperature: float = 1.0):
@@ -14,7 +14,7 @@ class BaseChat(ABC):
 
     def get_model_response(self, prompt, code_format=None) -> list:
         code_blocks = []
-        max_try = 3
+        max_try = 5
         while code_blocks == [] and max_try > 0:
             max_try -= 1
             try:
