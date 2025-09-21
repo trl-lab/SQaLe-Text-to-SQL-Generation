@@ -295,7 +295,7 @@ class REFORCE:
         max_value = max(result.values())
         max_dict = {k: v for k, v in result.items() if v == max_value}
 
-        prompt = f"/no_think You are gieven DB info, task and candidate SQLs. You should choose the most correct one based on database info:\n{table_info}. The task is: {task}. Here are some candidate sqls and answers: \n"
+        prompt = f"You are gieven DB info, task and candidate SQLs. You should choose the most correct one based on database info:\n{table_info}. The task is: {task}. Here are some candidate sqls and answers: \n"
         for sql, counts in max_dict.items():
             sql_path = os.path.join(search_directory, sql)
             csv_path = os.path.join(search_directory, sql_paths[sql])
@@ -310,8 +310,7 @@ class REFORCE:
                     prompt += hard_cut(f.read(), 5000)
 
         max_try = 3
-        prompt += "Compare the SQL and results of each answer, think step by step and choose one SQL as the correct answer. Output thinking process and the name of sql in ```plaintext\nxxx.sql``` format. You should not ingnore 'plaintext' and make sure to put it into a plaintext code box.\n"
-        prompt += "For results with null or zero values, they tend to be wrong answer.\n"
+        prompt += "Compare the SQL and results of each answer, think step by step and choose one SQL as the correct answer. Output thinking process and the name of sql in ```plaintext\nxxx.sql``` format. Make sure to put it into a plaintext code box.\n"
         prompt += "You reasoning step should be: 1. Exclude unreasonable results. 2. Check results if aligning with task description. 3. Analyze SQL if aligning with task description.\n"
         response = chat_session.get_model_response(prompt, "plaintext")
         while max_try > 0:
