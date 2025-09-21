@@ -150,7 +150,7 @@ class LLM_Interface:
 
 if __name__ == "__main__":
     print("Building semi-synthetic dataset...")
-    dataset = build_semisynth_dataset("/Users/cowolff/Documents/GitHub/text-to-sql-dataset/data/statements", "/Users/cowolff/Documents/GitHub/text-to-sql-dataset/data/examples.csv", LLM_Interface(model_name="qwen3:30b"))
+    dataset = build_semisynth_dataset("data/statements", "data/examples.csv", LLM_Interface(model_name="qwen3:30b"))
 
     print(f"Generated {len(dataset)} question-SQL pairs.")
     out_file = "semi_synthetic_dataset.jsonl"
