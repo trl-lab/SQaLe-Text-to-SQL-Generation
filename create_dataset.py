@@ -10,6 +10,7 @@ from ReFoRCE.utils import extract_code_blocks
 import random
 from tqdm import tqdm
 import json
+import argparse
 
 NUM_SCHEMAS = 221_171
 AVG_QUESTIONS_PER_SCHEMA = 10
@@ -106,17 +107,18 @@ def build_semisynth_dataset(schema_folder: str, example_questions_file: str, llm
             questions = questions[:min(len(questions), AVG_QUESTIONS_PER_SCHEMA)]
             print(f"Generated {len(questions)} questions for schema {os.path.basename(file)}.")
             for q in questions:
-                sql_candidate = generate_sql_with_reforce(llm, schema_sql, q)
-                cmd_type = annotate_sql_type(sql_candidate)
-                meta = {
-                    "schema_file": os.path.basename(file),
-                    "tokens_estimate": estimate_token_usage(q, sql_candidate),
-                    "source": "semi-synthetic",
-                    "generation_model": llm.model_name,
-                    "pipeline": "ReFoRCE",
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                dataset.append((os.path.basename(file), schema_sql, meta, q, sql_candidate, cmd_type))
+                if q != "":
+                    sql_candidate = generate_sql_with_reforce(llm, schema_sql, q)
+                    cmd_type = annotate_sql_type(sql_candidate)
+                    meta = {
+                        "schema_file": os.path.basename(file),
+                        "tokens_estimate": estimate_token_usage(q, sql_candidate),
+                        "source": "semi-synthetic",
+                        "generation_model": llm.model_name,
+                        "pipeline": "ReFoRCE",
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    dataset.append((os.path.basename(file), schema_sql, meta, q, sql_candidate, cmd_type))
     except KeyboardInterrupt:
         print("Interrupted! Finalizing dataset...")
     print(f"Generated {len(dataset)} question-SQL pairs before deduplication.")
@@ -150,7 +152,15 @@ class LLM_Interface:
 
 if __name__ == "__main__":
     print("Building semi-synthetic dataset...")
-    dataset = build_semisynth_dataset("data/statements", "data/examples.csv", LLM_Interface(model_name="qwen2.5-coder:32b"))
+    parser = argparse.ArgumentParser(description="Build semi-synthetic text-to-SQL dataset.")
+    parser.add_argument("--model_name", type=str, default="qwen2.5-coder:7b", help="LLM model name to use")
+    args = parser.parse_args()
+
+    dataset = build_semisynth_dataset(
+        "data/statements",
+        "data/examples.csv",
+        LLM_Interface(model_name=args.model_name)
+    )
 
     print(f"Generated {len(dataset)} question-SQL pairs.")
     out_file = "semi_synthetic_dataset.jsonl"
