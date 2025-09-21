@@ -129,23 +129,24 @@ class LLM_Interface:
         self.client = Client(host=os.environ.get("OLLAMA_HOST", host or "http://localhost:11434"))
 
     def synthesize_list(self, schema, examples, count):
-        prompt = "Generate 10 diverse questions for the following schema:\n"
+        prompt = "/no_think Generate 10 diverse questions for the following schema:\n"
         prompt += schema + "\n"
         prompt += "Use these examples as inspiration in terms of style and complexity:\n"
         prompt += "\n".join(examples) + "\n"
         prompt += f"Please provide {count} questions."
-        prompt += f"Use the following format for your response:\n"
-        prompt += "```plaintext\nFirst Question?\n2nd Question?\n...\nNth Question?\n```"
+        prompt += f"Use the following format for your response and put it into the plaintext code box:\n"
+        prompt += "```plaintext\n<First Question>\n<2nd Question>\n...\n<Nth Question>\n```"
 
         response = self.client.chat(model=self.model_name, messages=[{"role": "user", "content": prompt}])
         raw = response["message"]["content"]
         blocks = extract_code_blocks(raw, "plaintext")
         if blocks:
             return [block.strip() for block in blocks][-1].split("\n")
+        print(f"Raw response:\n{raw}\n")
         return []
 
     def generate_sql(self, question, tables):
-        return get_best_sql_with_voting(tables, question, num_votes=3, model=self.model_name, api_hint="local")
+        return get_best_sql_with_voting(tables, question, num_votes=2, model=self.model_name, api_hint="local")
 
 if __name__ == "__main__":
     print("Building semi-synthetic dataset...")

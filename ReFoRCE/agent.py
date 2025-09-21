@@ -295,7 +295,7 @@ class REFORCE:
         max_value = max(result.values())
         max_dict = {k: v for k, v in result.items() if v == max_value}
 
-        prompt = f"You are gieven DB info, task and candidate SQLs. You should choose the most correct one based on database info:\n{table_info}. The task is: {task}. Here are some candidate sqls and answers: \n"
+        prompt = f"/no_think You are gieven DB info, task and candidate SQLs. You should choose the most correct one based on database info:\n{table_info}. The task is: {task}. Here are some candidate sqls and answers: \n"
         for sql, counts in max_dict.items():
             sql_path = os.path.join(search_directory, sql)
             csv_path = os.path.join(search_directory, sql_paths[sql])
@@ -310,7 +310,7 @@ class REFORCE:
                     prompt += hard_cut(f.read(), 5000)
 
         max_try = 3
-        prompt += "Compare the SQL and results of each answer, think step by step and choose one SQL as the correct answer. Output thinking process and the name of sql in ```plaintext\nxxx.sql``` format. You should not ingnore 'plaintext'.\n"
+        prompt += "Compare the SQL and results of each answer, think step by step and choose one SQL as the correct answer. Output thinking process and the name of sql in ```plaintext\nxxx.sql``` format. You should not ingnore 'plaintext' and make sure to put it into a plaintext code box.\n"
         prompt += "For results with null or zero values, they tend to be wrong answer.\n"
         prompt += "You reasoning step should be: 1. Exclude unreasonable results. 2. Check results if aligning with task description. 3. Analyze SQL if aligning with task description.\n"
         response = chat_session.get_model_response(prompt, "plaintext")
@@ -323,16 +323,19 @@ class REFORCE:
         if max_try == 0:
             print(f"{search_directory} Empty")
             return
-        with open(os.path.join(search_directory, response[0].strip())) as f:
-            selected_sql = f.read()
-        sql_env = SqlEnv()
-        if sql_env.execute_sql_api(selected_sql, self.sql_id, self.complete_csv_save_path, api=self.api, sqlite_path=self.sqlite_path) == '0':
-            with open(self.complete_sql_save_path, "w") as f:
-                f.write(selected_sql)
-            with open(self.complete_vote_log_path, "w") as f:
-                f.write("[Vote]\n"+prompt+"\n[Vote]")
-                f.write(chat_session.messages[-1]['content'])
-        sql_env.close_db()
+        try:
+            with open(os.path.join(search_directory, response[0].strip())) as f:
+                selected_sql = f.read()
+            sql_env = SqlEnv()
+            if sql_env.execute_sql_api(selected_sql, self.sql_id, self.complete_csv_save_path, api=self.api, sqlite_path=self.sqlite_path) == '0':
+                with open(self.complete_sql_save_path, "w") as f:
+                    f.write(selected_sql)
+                with open(self.complete_vote_log_path, "w") as f:
+                    f.write("[Vote]\n"+prompt+"\n[Vote]")
+                    f.write(chat_session.messages[-1]['content'])
+            sql_env.close_db()
+        except Exception as e:
+            print(f"Vote error: {e}")
 
     def vote_result(self, search_directory, args, sql_paths, table_info, task):
 

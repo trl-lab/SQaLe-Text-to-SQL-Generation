@@ -120,7 +120,7 @@ class Prompts:
             elif task in ["BIRD", "spider"]:
                 ce = "Some few-shot examples after column exploration may be helpful:\n" + pre_info if pre_info else ""
                 return table_info + "\n" + ce
-        refine_prompt = table_info + "\n"
+        refine_prompt = "/no_think " + table_info + "\n"
         # refine_prompt += "Begin Exploring Related Columns\n" + response_pre_txt + "\nRefined SQLs and results:\n" + pre_info + "End Exploring Related Columns\n" if pre_info else ""
         refine_prompt += "Some few-shot examples after column exploration may be helpful:\n" + pre_info if pre_info else ""
 
