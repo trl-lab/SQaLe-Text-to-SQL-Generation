@@ -5,7 +5,7 @@ from tqdm import tqdm
 from tqdm import trange
 
 # Load dataset
-ds = load_dataset("cwolff/schemapile", split="full")
+ds = load_dataset("trl-lab/schemapile", split="full")
 
 
 sqlite_valid_types = [
