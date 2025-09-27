@@ -322,7 +322,7 @@ def process_folder_batched(
         top_k=(top_k if top_k is not None else -1),
     )
 
-    llm = LLM(model=model, max_model_len=10000)
+    llm = LLM(model=model, max_model_len=15000)
 
     round_idx = 0
     rr_cursor = 0  # round-robin cursor among *eligible* jobs for a round
