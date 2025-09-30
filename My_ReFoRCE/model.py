@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from My_ReFoRCE.in_memory_db import InMemoryDB
 
 # =============================
 # LLM Adapter (pluggable)
@@ -10,7 +11,7 @@ from typing import Any, Iterable, List, Optional, Sequence, Tuple
 class GenerationConfig:
     temperature: float = 0.7         # sampling temperature
     top_p: float = 0.9               # nucleus sampling
-    max_tokens: int = 512            # max tokens to generate
+    max_tokens: int = 4096            # max tokens to generate
 
 class ModelAdapter:
     """Abstract adapter. Implement batch_generate to return k candidates per prompt.
@@ -28,8 +29,6 @@ class VLLMAdapter(ModelAdapter):
         from vllm import LLM, SamplingParams
 
         sampling_params = SamplingParams(
-            temperature=cfg.temperature,
-            top_p=cfg.top_p,
             max_tokens=cfg.max_tokens,
             top_k=-1,  # disable top-k
         )
@@ -45,6 +44,14 @@ class VLLMAdapter(ModelAdapter):
         results = []
         for out in outputs:
             text = out.outputs[0].text if out.outputs else ""
-            candidates = [q.strip() for q in text.split("###") if q.strip()]
-            results.append(candidates if candidates else [""])
+            results.append(text)
         return results
+    
+class OpenAIAdapter(ModelAdapter):
+
+    def __init__(self, model: str, api_key: str):
+        super().__init__()
+        self.model = model
+        self.api_key = api_key
+
+    def batch_generate(self, prompts: Sequence[str], system_prompt: Optional[str], cfg: GenerationConfig) -> List[List[str]]:
