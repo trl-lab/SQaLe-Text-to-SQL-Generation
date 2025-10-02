@@ -78,7 +78,11 @@ class AsyncOpenAIAdapter(ModelAdapter):
         super().__init__()
         self.model = model
         self.client = AsyncOpenAI(api_key=api_key)
-        self.semaphore = asyncio.Semaphore(max_concurrency)
+        # Don't create an asyncio.Semaphore here because it would be bound
+        # to the event loop that constructs the adapter. Instead, store the
+        # concurrency value and create a semaphore inside the active
+        # async context (see batch_generate_async).
+        self._max_concurrency = max_concurrency
         self.max_retries = max_retries
         self.base_delay = base_delay
 
@@ -89,8 +93,11 @@ class AsyncOpenAIAdapter(ModelAdapter):
         system_prompt: Optional[str],
         cfg: GenerationConfig,
     ) -> List[List[str]]:
+        # Create a semaphore bound to the currently running event loop.
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
         tasks = [
-            asyncio.create_task(self._generate_one(i, prompt, system_prompt, cfg))
+            asyncio.create_task(self._generate_one(i, prompt, system_prompt, cfg, semaphore))
             for i, prompt in enumerate(prompts)
         ]
         results: List[Tuple[int, str]] = await asyncio.gather(*tasks)
@@ -115,24 +122,23 @@ class AsyncOpenAIAdapter(ModelAdapter):
         prompt: str,
         system_prompt: Optional[str],
         cfg: GenerationConfig,
+        semaphore: asyncio.Semaphore,
     ) -> Tuple[int, str]:
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        print(f"Generating for prompt {idx}...")
         # retry with exponential backoff on transient errors
         attempt = 0
         while True:
             try:
-                print(messages)
-                async with self.semaphore:
+                # Use the semaphore bound to the current event loop.
+                async with semaphore:
                     resp = await self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
                     )
-                print(resp)
                 text = resp.choices[0].message.content or ""
                 return idx, text
 
