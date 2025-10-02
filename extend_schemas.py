@@ -123,13 +123,10 @@ def build_initial_prompt(existing_schema: str) -> str:
         "Requirements:\n"
         "1) Use SQLite dialect only. Avoid non-SQLite features (no ENUM, SERIAL, IDENTITY, MONEY, schemas, arrays, COMMENT ON, etc.).\n"
         "2) Keep existing objects unchanged. Only add new CREATE TABLE statements (plus any necessary CREATE INDEX statements).\n"
-        "3) Each new table must have:\n"
-        "   - A primary key (INTEGER PRIMARY KEY or TEXT primary key as appropriate).\n"
-        "   - Sensible columns with types valid in SQLite (INTEGER, REAL, TEXT, BLOB, NUMERIC).\n"
-        "   - Foreign keys where appropriate, referencing existing or newly added tables.\n"
+        "3) Each new table should be a sensible and realistic extension to the existing schema.\n"
         "4) Use similar naming schemes; keep names unique and consistent.\n"
         "5) Output executable SQLite statements within ```sqlite ... ``` code blocks.\n"
-        "6) Do not drop or alter existing tables.\n\n"
+        "6) Do not drop or alter existing tables. Make sure that there are no logical errors in the foreign key references.\n\n"
         "Existing schema:\n"
         f"{existing_schema}\n"
     )
@@ -408,6 +405,8 @@ def process_folder_batched(
                         pbar.update(1)
                         completed_names.add(j.path.name)
                 else:
+                    print(f"Generated SQL for {j.path.name} failed to execute: {err}")
+                    print(f"--- Full candidate start ---\n{candidate}\n--- Full candidate end ---\n\n")
                     j.last_error = err or "Unknown SQLite error."
                     j.schedule_repair_or_fail()
 
