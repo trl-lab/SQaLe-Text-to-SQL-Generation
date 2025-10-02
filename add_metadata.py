@@ -23,7 +23,7 @@ def count_tokens(text: str) -> int:
             return len(_TIKTOKEN.encode(text))
         except Exception:
             pass
-    return len(re.findall(r"[A-Za-z0-9_%/*.+\-<>!=]+", text))
+    return len(re.findall(r"[A-Za-z0-9_%/*.+\\-<>!=]+", text))
 
 # -- SQL helpers --
 JOIN_RE = re.compile(r"\bjoin\b", re.IGNORECASE)
@@ -32,13 +32,11 @@ SQL_COMMANDS = [
     "WITH", "SELECT", "INSERT", "UPDATE", "DELETE",
     "CREATE", "ALTER", "DROP", "TRUNCATE",
     "UNION", "INTERSECT", "EXCEPT",
-    "MERGE", "CALL", "JOIN", "WHERE", "GROUP BY", "HAVING", "ORDER BY",
-    "LIMIT", "OFFSET", "VALUES", "SET", "RETURNING", "INTO", "ON", "AS", "AND", "OR", "NOT"
+    "MERGE", "CALL",
 ]
 COMMANDS_RE = re.compile(r"\b(" + "|".join(SQL_COMMANDS) + r")\b", re.IGNORECASE)
 
-# Count CREATE TABLE statements strictly from schema (case-insensitive).
-# Matches: CREATE TABLE, CREATE TEMP TABLE, CREATE TABLE IF NOT EXISTS, etc.
+# Count CREATE TABLE statements strictly from schema
 CREATE_TABLE_RE = re.compile(r"\bCREATE\s+(?:TEMP|TEMPORARY\s+)?TABLE\b", re.IGNORECASE)
 
 def extract_commands(sql: str) -> List[str]:
@@ -63,22 +61,60 @@ def count_tables_from_schema(schema: str) -> int:
         return 0
     return len(CREATE_TABLE_RE.findall(schema))
 
+def count_columns_from_schema(schema: str) -> int:
+    """Count column definitions inside CREATE TABLE statements."""
+    if not schema:
+        return 0
+
+    # Matches CREATE TABLE ... ( ... )
+    table_defs = re.findall(r"CREATE\s+(?:TEMP|TEMPORARY\s+)?TABLE\s+\w+\s*\((.*?)\);",
+                            schema, flags=re.IGNORECASE | re.DOTALL)
+    total_columns = 0
+    for cols_block in table_defs:
+        # Split on commas that separate columns/constraints
+        parts = [c.strip() for c in cols_block.split(",")]
+        for col in parts:
+            if not col:
+                continue
+            # Skip table-level constraints (start with PRIMARY, FOREIGN, UNIQUE, CONSTRAINT, etc.)
+            if re.match(r"^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT|INDEX)\b", col.strip(), re.IGNORECASE):
+                continue
+            total_columns += 1
+    return total_columns
+
 def extend_record(rec: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = rec.get("prompt", "") or ""
-    sql = rec.get("sql_statement", "") or ""
+    # Map field names
+    question = rec.get("prompt", "") or rec.get("question", "") or ""
+    query = rec.get("sql_statement", "") or rec.get("query", "") or ""
     schema = rec.get("schema", "") or ""
 
-    combined = f"{schema}\n{prompt}\n{sql}"
-    token_count = count_tokens(combined)
-    num_joins = count_joins(sql)
-    commands = extract_commands(sql)
-    num_tables = count_tables_from_schema(schema)
+    # Skip trivial "SELECT 1;"
+    if query.strip().upper() == "SELECT 1;":
+        return None
 
-    out = {k: v for k, v in rec.items() if k != "cmd_type"}
+    # Token counts split + total
+    token_count = {
+        "question": count_tokens(question),
+        "query": count_tokens(query),
+        "schema": count_tokens(schema),
+    }
+    token_count["total"] = sum(token_count.values())
+
+    num_joins = count_joins(query)
+    commands = extract_commands(query)
+    num_tables = count_tables_from_schema(schema)
+    number_of_columns = count_columns_from_schema(schema)
+
+    # Copy everything except old fields, rename prompt/sql_statement → question/query
+    out = {k: v for k, v in rec.items() if k not in ("cmd_type", "prompt", "sql_statement")}
+    out["question"] = question
+    out["query"] = query
+    out["schema"] = schema
     out["token_count"] = token_count
     out["num_joins"] = num_joins
     out["commands"] = commands
     out["num_tables"] = num_tables
+    out["number_of_columns"] = number_of_columns
     return out
 
 def process_stream(instream, outstream):
@@ -100,7 +136,8 @@ def process_stream(instream, outstream):
 
         try:
             out = extend_record(rec)
-            outstream.write(json.dumps(out, ensure_ascii=False) + "\n")
+            if out is not None:  # skip SELECT 1;
+                outstream.write(json.dumps(out, ensure_ascii=False) + "\n")
         except Exception as e:
             err_obj = {
                 "error": "ProcessingError",
@@ -112,7 +149,7 @@ def process_stream(instream, outstream):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extend JSONL SQL records with token counts, JOIN count, command list, and number of tables from schema; remove cmd_type."
+        description="Extend JSONL SQL records: rename fields, add token counts, JOIN count, command list, table count, and column count; skip trivial SELECT 1 queries."
     )
     parser.add_argument("--input", help="Path to input JSONL file")
     parser.add_argument("-o", "--output", help="Path to output JSONL file (default: stdout)")

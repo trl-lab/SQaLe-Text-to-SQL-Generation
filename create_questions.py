@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--out", type=str, default="questions.jsonl", help="Output JSONL with (schema_file, schema_sql, question)")
     parser.add_argument("--per_schema", type=int, default=AVG_QUESTIONS_PER_SCHEMA, help="Questions per schema")
     parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
-    parser.add_argument("--max_tokens", type=int, default=1024, help="Max tokens to generate")
+    parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens to generate")
     parser.add_argument("--top_k", type=int, default=None, help="Top-k sampling (default -1 = disabled)")
     args = parser.parse_args()
 

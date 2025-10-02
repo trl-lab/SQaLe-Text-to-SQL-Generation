@@ -3,7 +3,7 @@
 Push a JSONL file into a Hugging Face Datasets repository.
 
 Usage:
-  python push_jsonl_to_hf_dataset.py \
+  python push_to_hf.py \
     --jsonl /path/to/data.jsonl \
     --repo-id username/my-dataset \
     --split-name train \

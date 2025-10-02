@@ -121,22 +121,23 @@ class AsyncOpenAIAdapter(ModelAdapter):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        print(f"Generating for prompt {idx}...")
         # retry with exponential backoff on transient errors
         attempt = 0
         while True:
             try:
+                print(messages)
                 async with self.semaphore:
                     resp = await self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
-                        temperature=cfg.temperature,
-                        top_p=cfg.top_p,
-                        max_tokens=cfg.max_tokens,
                     )
+                print(resp)
                 text = resp.choices[0].message.content or ""
                 return idx, text
 
             except (RateLimitError, APITimeoutError, InternalServerError, APIError) as e:
+                print(f"Error on prompt {idx}, attempt {attempt + 1}: {e}")
                 attempt += 1
                 if attempt > self.max_retries:
                     # give up and return best-effort info
