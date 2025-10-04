@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from typing import List, Tuple, Set, Iterable
+import time
 
 from tqdm import tqdm
 
@@ -80,8 +81,8 @@ def main():
                         help="Temperature for vote/critique passes (default: 0.0)")
     parser.add_argument("--vote_top_p", type=float, default=1.0,
                         help="Top-p for vote/critique passes (default: 1.0)")
-    parser.add_argument("--max_model_len", type=int, default=15000,
-                        help="Max model context length for vLLM (default: 15000)")
+    parser.add_argument("--max_model_len", type=int, default=21000,
+                        help="Max model context length for vLLM (default: 21000)")
     args = parser.parse_args()
 
     # 1) Load items
@@ -105,6 +106,8 @@ def main():
     # 3) Batch over items
     total = len(items_all)
     written = 0
+
+    current_timestamp = time.time()
 
     with open(args.out, "w", encoding="utf-8") as fout:
         pbar = tqdm(total=total, desc="Generating SQL (batched)")
@@ -137,6 +140,8 @@ def main():
 
         pbar.close()
 
+    time_end = time.time()
+    print(f"Time taken: {time_end - current_timestamp:.2f} seconds")
     print(f"Processed {total} items; wrote {written} prompt-SQL pairs to {args.out}")
 
 if __name__ == "__main__":

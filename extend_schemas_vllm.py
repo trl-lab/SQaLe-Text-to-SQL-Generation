@@ -34,6 +34,7 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
+import time
 
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
@@ -328,6 +329,8 @@ def process_folder_batched(
     rr_cursor = 0  # round-robin cursor among *eligible* jobs for a round
     completed_names = set()
 
+    current_timestamp = time.time()
+
     with tqdm(total=len(active), desc="Schemas completed", unit="schema") as pbar:
         while True:
             # Eligible = have a prompt ready and not finished
@@ -399,6 +402,8 @@ def process_folder_batched(
                     j.last_error = err or "Unknown SQLite error."
                     j.schedule_repair_or_fail()
 
+    time_end = time.time()
+    print(f"Time taken: {time_end - current_timestamp:.2f} seconds")
     print("✅ Done.")
 
 

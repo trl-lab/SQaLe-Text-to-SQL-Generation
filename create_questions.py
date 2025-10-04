@@ -13,6 +13,7 @@ import random
 import argparse
 from typing import List, Tuple
 from tqdm import tqdm
+import random
 
 from vllm import LLM, SamplingParams
 from ReFoRCE.utils import extract_code_blocks  # keep your existing helper
@@ -35,15 +36,50 @@ def load_example_questions(path: str) -> List[str]:
                 questions.add(q)
     return list(questions)
 
-def build_prompt(schema_sql: str, examples: List[str], count: int) -> str:
+def probability(j: int) -> float:
+    """
+    Probability mass function for number of joins j in {0,...,10}.
+    - P(0) = 0.20
+    - P(1) = 0.20
+    - For j=2..10: decreases linearly to 0 at j=10.
+    """
+    if j not in range(0, 11):
+        return 0.0
+
+    if j in (0, 1):
+        return 0.20
+
+    # Linear decrease from j=2 to j=10
+    m = 0.60 / 36  # slope chosen so total probability = 1
+    return m * (10 - j)
+
+def sample_j() -> int:
+    """Sample a number of joins j according to the probability distribution."""
+    probs = [probability(j) for j in range(11)]
+    r = random.random()
+    cumulative = 0.0
+    for j, p in enumerate(probs):
+        cumulative += p
+        if r <= cumulative:
+            return j
+    return 10  # fallback (in case of rounding issues)
+
+def build_prompt(schema_sql: str, examples: list[str], count: int) -> str:
+    j = sample_j()
+
     prompt = SYSTEM_PREFIX + "\n\n"
-    prompt += "/no_think Generate 10 diverse questions for the following schema:\n"
+    prompt += f"/no_think Generate {count} diverse questions for the following schema:\n"
     prompt += schema_sql + "\n\n"
+
     if examples:
         prompt += "Use these examples as inspiration in terms of style and complexity:\n"
         prompt += "\n".join(examples[:10]) + "\n\n"
-    prompt += f"Please provide {count} questions.\n"
+
+    # Explicit difficulty instruction
+    prompt += f"The questions should be so complex that you need {j} number of joins to solve them.\n\n"
+
     prompt += (
+        f"Please provide {count} questions.\n"
         "Use the following format for your response and put it into the plaintext code box:\n"
         "```plaintext\n<First Question>\n<2nd Question>\n...\n<Nth Question>\n```"
     )
