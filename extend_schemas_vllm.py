@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 import time
+import numpy as np
 
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
@@ -138,6 +139,26 @@ def build_repair_prompt(existing_schema: str, last_error: str) -> str:
         f"{existing_schema}\n"
     )
 
+def sample_from_distribution():
+    xs = np.arange(0, 351)  # integers 0..350
+    
+    # Piecewise definition of f(x)
+    f_vals = np.zeros_like(xs, dtype=float)
+    
+    # Rising part: 0 <= x <= 100 (from 50 to 100)
+    mask1 = (xs >= 0) & (xs <= 100)
+    f_vals[mask1] = 50 + 50 * np.sin(np.pi * xs[mask1] / 200)
+    
+    # Falling part: 100 < x <= 350 (from 100 down to 0)
+    mask2 = (xs > 100) & (xs <= 350)
+    f_vals[mask2] = 100 * np.cos(np.pi * (xs[mask2] - 100) / 500)
+    
+    # Normalize to probability distribution
+    probs = f_vals / f_vals.sum()
+    
+    # Sample one integer according to the probabilities
+    choice = np.random.choice(xs, p=probs)
+    return choice
 
 # ----------------------------- Job tracking -----------------------------
 
@@ -147,8 +168,6 @@ class Job:
     out_dir: Optional[Path]
     in_place: bool
     retries: int
-    min_tables: int
-    max_tables: int
 
     # dynamic
     combined_schema: str = ""
@@ -167,7 +186,7 @@ class Job:
         original = read_text(self.path).strip()
         self.combined_schema = original
         self.current_tables = count_tables(self.combined_schema)
-        self.target = random.randint(self.min_tables, self.max_tables)
+        self.target = sample_from_distribution()
 
     def prepare_initial_or_finish(self) -> None:
         if self.current_tables >= self.target:
@@ -268,8 +287,6 @@ def process_folder_batched(
     retries: int,
     out_dir: Optional[Path],
     in_place: bool,
-    min_tables: int,
-    max_tables: int,
     temperature: float,
     max_tokens: int,
     top_k: Optional[int],
@@ -302,8 +319,6 @@ def process_folder_batched(
             out_dir=out_dir,
             in_place=in_place,
             retries=max(1, retries),
-            min_tables=max(0, int(min_tables)),
-            max_tables=max(max(0, int(min_tables)), int(max_tables)),
         )
         j.init_from_file()
         print(f"Target for {f.name}: {j.target} tables (starting at {j.current_tables})")
@@ -417,8 +432,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--retries", type=int, default=3, help="Max attempts per batch for a file (including the first).")
     p.add_argument("--out-dir", type=Path, default=None, help="Directory to write outputs (ignored with --in-place).")
     p.add_argument("--in-place", action="store_true", help="Overwrite the input files with the extended schemas.")
-    p.add_argument("--min-tables", type=int, default=90, help="Minimum target tables per schema (inclusive).")
-    p.add_argument("--max-tables", type=int, default=110, help="Maximum target tables per schema (inclusive).")
     # sampling / generation
     p.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature.")
     p.add_argument("--max-tokens", type=int, default=4096, help="Max new tokens to generate per round.")
@@ -437,8 +450,6 @@ def main() -> None:
         retries=max(1, args.retries),
         out_dir=args.out_dir,
         in_place=args.in_place,
-        min_tables=max(0, int(args.min_tables)),
-        max_tables=max(max(0, int(args.min_tables)), int(args.max_tables)),
         temperature=float(args.temperature),
         max_tokens=int(args.max_tokens),
         top_k=args.top_k if args.top_k is None else int(args.top_k),
