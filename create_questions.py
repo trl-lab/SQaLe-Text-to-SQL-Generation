@@ -20,6 +20,7 @@ from ReFoRCE.utils import extract_code_blocks  # keep your existing helper
 
 AVG_QUESTIONS_PER_SCHEMA = 10
 BATCH_SIZE = 32  # always 32 at a time
+NUMBER_OF_EXAMPLES = 4  # number of exemplar questions to include in the prompt (from the CSV file)
 
 SYSTEM_PREFIX = (
     "You are an expert at writing diverse, realistic NL questions for SQL schemas. "
@@ -46,8 +47,10 @@ def probability(j: int) -> float:
     if j not in range(0, 11):
         return 0.0
 
-    if j in (0, 1):
-        return 0.20
+    if j == 0:
+        return 0.15
+    elif j == 1:
+        return 0.25
 
     # Linear decrease from j=2 to j=10
     m = 0.60 / 36  # slope chosen so total probability = 1
@@ -72,11 +75,11 @@ def build_prompt(schema_sql: str, examples: list[str], count: int) -> str:
     prompt += schema_sql + "\n\n"
 
     if examples:
-        prompt += "Use these examples as inspiration in terms of style and complexity:\n"
-        prompt += "\n".join(examples[:10]) + "\n\n"
+        prompt += "Use these examples as inspiration in terms of writing style:\n"
+        prompt += "\n".join(examples[:NUMBER_OF_EXAMPLES]) + "\n\n"
 
     # Explicit difficulty instruction
-    prompt += f"The questions should be so complex that you need {j} number of joins to solve them.\n\n"
+    prompt += f"The questions must (!!) be so complex that you need {j} number of joins to solve them. Only diverge from this requirement, if there are not enough tables to support it.\n\n"
 
     prompt += (
         f"Please provide {count} questions.\n"
