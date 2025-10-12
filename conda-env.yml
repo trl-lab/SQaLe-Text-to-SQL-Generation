@@ -136,7 +136,6 @@ dependencies:
       - httpx==0.28.1
       - huggingface-hub==0.34.4
       - hyperframe==6.1.0
-      - icl-for-rag==0.1.0
       - idna==3.10
       - importlib-resources==6.5.2
       - inquirerpy==0.3.4
