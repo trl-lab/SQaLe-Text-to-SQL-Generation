@@ -17,4 +17,4 @@ conda env create -f conda-env.yml
 
 source activate cowolff
 
-srun python -uc "from vllm import LLM; llm = LLM(model='facebook/opt-125m', tensor_parallel_size=2); print('VLLM loaded on GPUs:', llm.llm_engine.device_list)"
+srun python -uc "from vllm import LLM; llm = LLM(model='facebook/opt-125m', tensor_parallel_size=2); print('VLLM loaded on GPUs')"
