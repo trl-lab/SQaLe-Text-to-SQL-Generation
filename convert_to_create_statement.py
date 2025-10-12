@@ -48,26 +48,25 @@ def json_to_create_tables(record):
     tables = record["TABLES"]
     sql_statements = []
 
-    for table_name, cols, pk, fks in zip(
-        tables["TABLE_NAME"],
-        tables["COLUMNS"],
-        tables["PRIMARY_KEYS"],
-        tables["FOREIGN_KEYS"],
-    ):
+    for table in tables:
         try:
+
+            table_name = table["TABLE_NAME"]
+            cols = table["COLUMNS"]
+            pk = table.get("PRIMARY_KEY", [])
+            fks = table.get("FOREIGN_KEYS", {"COLUMNS": [], "FOREIGN_TABLE": [], "REFERRED_COLUMNS": [], "ON_DELETE": [], "ON_UPDATE": []})
+
             col_defs = []
 
             table_name = f'"{table_name}"' if table_name.lower() in sqlite_protected_keywords else table_name
-            # Columns
-            for name, col_type, nullable, unique, default, is_primary, is_index in zip(
-                cols["NAME"],
-                cols["TYPE"],
-                cols["NULLABLE"],
-                cols["UNIQUE"],
-                cols["DEFAULT"],
-                cols["IS_PRIMARY"],
-                cols["IS_INDEX"],
-            ):
+
+            for columns in cols:
+                name = columns.get("NAME", "col")
+                col_type = columns.get("TYPE", "TEXT") or "TEXT"
+                nullable = columns.get("NULLABLE", True)
+                unique = columns.get("UNIQUE", False)
+                default = columns.get("DEFAULT", None)
+
                 name = f'"{name}"' if name.lower() in sqlite_protected_keywords else name
 
                 # if the name starts with an integer, put it in quotes
@@ -93,14 +92,14 @@ def json_to_create_tables(record):
             if pk:
                 col_defs.append(f"PRIMARY KEY ({', '.join(pk)})")
 
-            # Foreign keys
-            for cols_fk, ft, ref, on_delete, on_update in zip(
-                fks["COLUMNS"],
-                fks["FOREIGN_TABLE"],
-                fks["REFERRED_COLUMNS"],
-                fks["ON_DELETE"],
-                fks["ON_UPDATE"],
-            ):
+            for fk in fks:
+                
+                cols_fk = fk.get("COLUMNS", [])
+                ft = fk.get("FOREIGN_TABLE", "")
+                ref = fk.get("REFERRED_COLUMNS", [])
+                on_delete = fk.get("ON_DELETE", "")
+                on_update = fk.get("ON_UPDATE", "")
+
                 on_delete = "SET NULL" if on_delete == "SetNull" else on_delete
                 on_delete = "CASCADE" if on_delete == "Cascade" else on_delete
                 on_delete = "RESTRICT" if on_delete == "Restrict" else on_delete
@@ -132,6 +131,7 @@ def json_to_create_tables(record):
             sql_statements.append(table_sql)
         except Exception as e:
             print(f"Error generating SQL for table {table_name}: {e}")
+            import traceback; print(traceback.format_exc())
             continue
 
     return sql_statements
