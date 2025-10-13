@@ -72,7 +72,7 @@ def extract_sqlite_block(text: str) -> Optional[str]:
     """
     pattern = re.compile(r"```sqlite\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
     m = pattern.search(text or "")
-    return m.group(1).strip() if m else None
+    return m.group(1).strip() if m else text
 
 
 def get_sql_from_generated(content: str) -> Optional[str]:
@@ -118,10 +118,11 @@ SYSTEM_INSTRUCTION = (
     "You output only valid SQLite DDL without any explanations."
 )
 
-def build_initial_prompt(existing_schema: str) -> str:
+def build_initial_prompt(existing_schema: str, current_tables: int, target_tables: int) -> str:
+    add_tables = min(15, target_tables - current_tables)
     return (
         "/no_think\n"
-        "Extend the following database schema with exactly 15 NEW tables.\n\n"
+        f"Extend the following database schema with exactly {add_tables} NEW tables.\n\n"
         "Requirements:\n"
         "1) Use SQLite dialect only. Avoid non-SQLite features (no ENUM, SERIAL, IDENTITY, MONEY, schemas, arrays, COMMENT ON, etc.).\n"
         "2) Keep existing objects unchanged. Only add new CREATE TABLE statements (plus any necessary CREATE INDEX statements).\n"
@@ -134,10 +135,11 @@ def build_initial_prompt(existing_schema: str) -> str:
     )
 
 
-def build_repair_prompt(existing_schema: str, last_error: str) -> str:
+def build_repair_prompt(existing_schema: str, last_error: str, current_tables: int, target_tables: int) -> str:
+    add_tables = min(15, target_tables - current_tables)
     return (
         "You previously produced SQL that failed to execute in SQLite. "
-        "Produce a corrected version that **only** adds 15 new tables and is fully executable in SQLite.\n\n"
+        f"Produce a corrected version that **only** adds {add_tables} new tables and is fully executable in SQLite.\n\n"
         "Keep the same intent and relationships, but fix any issues that would break on SQLite "
         "(e.g., unsupported types/constraints/ALTERs, bad references, reserved words, missing commas, etc.).\n\n"
         "Constraints:\n"
@@ -197,6 +199,7 @@ class Job:
         self.current_tables = count_tables(self.combined_schema)
         distribution = get_probability_distribution(100, 350)
         self.target = random.choices(range(0, 351), weights=distribution)[0]
+        print("" f"File {self.path.name}: {self.current_tables} tables, target {self.target} tables.")
 
     def prepare_initial_or_finish(self) -> None:
         if self.current_tables >= self.target:
@@ -209,13 +212,13 @@ class Job:
         self.batch_num += 1
         self.attempts_for_current_round = 1
         self.is_repair = False
-        self.next_prompt = build_initial_prompt(self.combined_schema)
+        self.next_prompt = build_initial_prompt(self.combined_schema, self.current_tables, self.target)
 
     def schedule_repair_or_fail(self) -> None:
         if self.attempts_for_current_round < self.retries:
             self.attempts_for_current_round += 1
             self.is_repair = True
-            self.next_prompt = build_repair_prompt(self.combined_schema, self.last_error or "")
+            self.next_prompt = build_repair_prompt(self.combined_schema, self.last_error or "", self.current_tables, self.target)
         else:
             # Give up on this round/file
             target_dir = self.out_dir if self.out_dir else self.path.parent
@@ -239,8 +242,6 @@ class Job:
         target_dir = self.out_dir if self.out_dir else self.path.parent
         out_name = f"{self.path.stem}_{self.current_tables}.sql"
         write_text(target_dir / out_name, self.combined_schema)
-
-        print(f"Updated {self.path.name}: now {self.current_tables} tables (target {self.target}).")
 
         # if target met, optionally overwrite original and finish; else enqueue next round's initial prompt
         if self.current_tables >= self.target:
@@ -424,8 +425,6 @@ def process_folder_batched(
                         pbar.update(1)
                         completed_names.add(j.path.name)
                 else:
-                    print(f"Generated SQL for {j.path.name} failed to execute: {err}")
-                    print(f"--- Full candidate start ---\n{candidate}\n--- Full candidate end ---\n\n")
                     j.last_error = err or "Unknown SQLite error."
                     j.schedule_repair_or_fail()
     end_time = time.time()
@@ -451,6 +450,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-tokens", type=int, default=4096, help="Max new tokens to generate per round.")
     p.add_argument("--top-k", type=int, default=None, help="(Compatibility) ignored by adapters; kept to avoid breaking your CLI.")
     p.add_argument("--max-batch-size", type=int, default=16, help="Max number of prompts handed to the model per round.")
+    p.add_argument("--tensor_parallel_size", type=int, default=1, help="(vLLM only) Tensor parallel size; ignored by OpenAI adapter.")
     return p.parse_args()
 
 
@@ -464,7 +464,7 @@ def make_adapter(args: argparse.Namespace) -> ModelAdapter:
         # Here we follow the provided signature by creating the vLLM engine and
         # passing it to the adapter if needed. Adjust to your exact adapter init.
         from vllm import LLM  # local import so openai-only users don't need vllm
-        engine = LLM(model=args.model, max_model_len=15000)
+        engine = LLM(model=args.model, max_model_len=15000, tensor_parallel_size=args.tensor_parallel_size)
         return VLLMAdapter(model=engine)
     else:
         return AsyncOpenAIAdapter(model=args.model, api_key=args.openai_api_key)
