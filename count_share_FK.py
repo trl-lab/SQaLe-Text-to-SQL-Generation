@@ -1,101 +1,67 @@
 #!/usr/bin/env python3
-import argparse
 import re
+import csv
 from pathlib import Path
-from collections import Counter
+import argparse
 
 def strip_sql_comments(sql_text: str) -> str:
-    """
-    Remove SQL comments:
-      - /* ... */ block comments
-      - -- ... line comments
-    (Basic string literal handling: avoids cutting inside quotes)
-    """
-    # Remove block comments
-    no_block = re.sub(r"/\*.*?\*/", "", sql_text, flags=re.DOTALL)
+    """Remove SQL block and line comments (/*...*/, -- ...)."""
+    sql_text = re.sub(r"/\*.*?\*/", "", sql_text, flags=re.DOTALL)
+    lines = []
+    for line in sql_text.splitlines():
+        cut = line.split("--", 1)[0]
+        lines.append(cut)
+    return "\n".join(lines)
 
-    out_lines = []
-    for line in no_block.splitlines():
-        cut_at = None
-        in_single = False
-        in_double = False
-        i = 0
-        while i < len(line):
-            ch = line[i]
-            if ch == "'" and not in_double:
-                in_single = not in_single
-            elif ch == '"' and not in_single:
-                in_double = not in_double
-            elif ch == "-" and not in_single and not in_double:
-                if i + 1 < len(line) and line[i + 1] == "-":
-                    cut_at = i
-                    break
-            i += 1
-        out_lines.append(line if cut_at is None else line[:cut_at])
-    return "\n".join(out_lines)
-
-# Detect ANY indication of foreign-key relationships:
-# - Table-level: "FOREIGN KEY" (optionally with CONSTRAINT ...)
-# - Inline column-level: "... REFERENCES other_table(col)"
-FK_PATTERNS = [
-    re.compile(r"\bFOREIGN\s+KEY\b", re.IGNORECASE),
-    re.compile(r"\bREFERENCES\b", re.IGNORECASE),
-]
-
-def file_has_foreign_keys(clean_sql: str) -> bool:
-    for pat in FK_PATTERNS:
-        if pat.search(clean_sql):
-            return True
-    return False
+def has_foreign_key(sql_text: str) -> bool:
+    """Return True if the SQL text contains a foreign key reference."""
+    cleaned = strip_sql_comments(sql_text)
+    return bool(
+        re.search(r"\bFOREIGN\s+KEY\b", cleaned, re.IGNORECASE)
+        or re.search(r"\bREFERENCES\b", cleaned, re.IGNORECASE)
+    )
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="Count SQL files without any foreign key relations and report their percentage share."
+    parser = argparse.ArgumentParser(
+        description="Scan SQL files and store CSV list of whether each file has a foreign key relation."
     )
-    ap.add_argument("folder", type=Path, help="Folder containing .sql files")
-    ap.add_argument("--ext", default=".sql", help="File extension to include (default: .sql)")
-    ap.add_argument("--report", type=Path, default=None,
-                    help="Optional CSV report listing file and has_foreign_keys (true/false)")
-    args = ap.parse_args()
+    parser.add_argument("folder", type=Path, help="Folder containing .sql files")
+    parser.add_argument(
+        "--output", "-o", type=Path, default=Path("foreign_keys.csv"),
+        help="Output CSV file (default: foreign_keys.csv)"
+    )
+    parser.add_argument("--ext", default=".sql", help="File extension to scan (default: .sql)")
+    args = parser.parse_args()
 
     if not args.folder.is_dir():
-        raise SystemExit(f"Folder not found: {args.folder}")
+        raise SystemExit(f"Error: folder not found → {args.folder}")
 
-    files = sorted(p for p in args.folder.rglob(f"*{args.ext}") if p.is_file())
+    files = sorted(args.folder.rglob(f"*{args.ext}"))
     if not files:
-        raise SystemExit(f"No files with extension '{args.ext}' found under {args.folder}")
+        raise SystemExit(f"No {args.ext} files found in {args.folder}")
 
-    results = []
-    for p in files:
+    rows = []
+    for file in files:
         try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
+            text = file.read_text(encoding="utf-8", errors="ignore")
         except Exception:
-            text = p.read_text(encoding="latin-1", errors="ignore")
-        cleaned = strip_sql_comments(text)
-        has_fk = file_has_foreign_keys(cleaned)
-        results.append((p, has_fk))
+            text = file.read_text(encoding="latin-1", errors="ignore")
+        fk = has_foreign_key(text)
+        rows.append((file.name, fk))
 
-    total = len(results)
-    no_fk_count = sum(1 for _, has_fk in results if not has_fk)
-    share = (no_fk_count / total) * 100.0
+    # Write CSV
+    with args.output.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["file_name", "foreign_key"])
+        writer.writerows(rows)
 
-    # Quick summary
-    buckets = Counter("has_fk" if has_fk else "no_fk" for _, has_fk in results)
-    print("=== Foreign-Key Presence Summary ===")
-    print(f"Total files scanned: {total}")
-    print(f"Files with NO foreign keys: {no_fk_count}")
-    print(f"Files WITH foreign keys:   {buckets['has_fk']}")
-    print(f"Percentage with NO foreign keys: {share:.2f}%")
-
-    if args.report:
-        import csv
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        with args.report.open("w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["path", "has_foreign_keys"])
-            for p, has_fk in results:
-                w.writerow([str(p), str(has_fk).lower()])
-        print(f"\nReport written to: {args.report}")
+    # Summary
+    total = len(rows)
+    fk_true = sum(1 for _, fk in rows if fk)
+    fk_false = total - fk_true
+    print(f"Wrote {total} records to {args.output}")
+    print(f"Files with foreign keys: {fk_true}")
+    print(f"Files without foreign keys: {fk_false} ({fk_false/total*100:.2f}%)")
 
 if __name__ == "__main__":
     main()
