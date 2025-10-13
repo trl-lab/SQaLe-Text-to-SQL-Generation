@@ -39,7 +39,9 @@ import sqlite3
 import random
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import List, Tuple, Optional, Dict, Sequence
+import numpy as np
 
 from tqdm import tqdm
 
@@ -146,6 +148,26 @@ def build_repair_prompt(existing_schema: str, last_error: str) -> str:
         f"{existing_schema}\n"
     )
 
+def get_probability_distribution(mode, max_val):
+    """Return a smooth gamma-like density with given mode and cutoff at max_val.
+    Before the peak, the curve starts at 0.5 and rises to 1 at the peak."""
+    x = np.arange(0, max_val + 1)
+    theta = max_val / 10
+    k = max(mode / theta + 1, 1.5)  # ensure shape>1 for a defined mode
+    y = (x ** (k - 1)) * np.exp(-x / theta)
+    y = y / y.max()  # normalize so peak is 1
+
+    # Find the peak index
+    peak_idx = np.argmax(y)
+    # Linearly interpolate from 0.5 at x_min to y[peak_idx] (which is 1) at the peak
+    if peak_idx > 0:
+        y[:peak_idx] = np.linspace(0.5, 1.0, peak_idx)
+    # No noise added
+    y[x > max_val] = 0  # strictly 0 above max_val
+    y = np.clip(y, 0, None)
+    y = y / y.sum()  # Normalize to sum to 1 for probability distribution
+    return y
+
 
 # ----------------------------- Job tracking -----------------------------
 
@@ -155,8 +177,6 @@ class Job:
     out_dir: Optional[Path]
     in_place: bool
     retries: int
-    min_tables: int
-    max_tables: int
 
     # dynamic
     combined_schema: str = ""
@@ -175,7 +195,8 @@ class Job:
         original = read_text(self.path).strip()
         self.combined_schema = original
         self.current_tables = count_tables(self.combined_schema)
-        self.target = random.randint(self.min_tables, self.max_tables)
+        distribution = get_probability_distribution(100, 350)
+        self.target = random.choices(range(0, 351), weights=distribution)[0]
 
     def prepare_initial_or_finish(self) -> None:
         if self.current_tables >= self.target:
@@ -277,8 +298,6 @@ def process_folder_batched(
     retries: int,
     out_dir: Optional[Path],
     in_place: bool,
-    min_tables: int,
-    max_tables: int,
     temperature: float,
     max_tokens: int,
     top_k: Optional[int],
@@ -311,8 +330,6 @@ def process_folder_batched(
             out_dir=out_dir,
             in_place=in_place,
             retries=max(1, retries),
-            min_tables=max(0, int(min_tables)),
-            max_tables=max(max(0, int(min_tables)), int(max_tables)),
         )
         j.init_from_file()
         j.prepare_initial_or_finish()
@@ -335,6 +352,8 @@ def process_folder_batched(
     round_idx = 0
     rr_cursor = 0  # round-robin cursor among *eligible* jobs for a round
     completed_names = set()
+
+    start_time = time.time()
 
     with tqdm(total=len(active), desc="Schemas completed", unit="schema") as pbar:
         while True:
@@ -409,7 +428,9 @@ def process_folder_batched(
                     print(f"--- Full candidate start ---\n{candidate}\n--- Full candidate end ---\n\n")
                     j.last_error = err or "Unknown SQLite error."
                     j.schedule_repair_or_fail()
-
+    end_time = time.time()
+    total_time = end_time - start_time
+    print(f"⏱️  Total time: {total_time:.2f} seconds for {len(jobs)} files ({len(active)} extended).")
     print("✅ Done.")
 
 
@@ -425,8 +446,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--retries", type=int, default=3, help="Max attempts per batch for a file (including the first).")
     p.add_argument("--out-dir", type=Path, default=None, help="Directory to write outputs (ignored with --in-place).")
     p.add_argument("--in-place", action="store_true", help="Overwrite the input files with the extended schemas.")
-    p.add_argument("--min-tables", type=int, default=90, help="Minimum target tables per schema (inclusive).")
-    p.add_argument("--max-tables", type=int, default=110, help="Maximum target tables per schema (inclusive).")
     # sampling / generation
     p.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature.")
     p.add_argument("--max-tokens", type=int, default=4096, help="Max new tokens to generate per round.")
@@ -462,8 +481,6 @@ def main() -> None:
         retries=max(1, args.retries),
         out_dir=args.out_dir,
         in_place=args.in_place,
-        min_tables=max(0, int(args.min_tables)),
-        max_tables=max(max(0, int(args.min_tables)), int(args.max_tables)),
         temperature=float(args.temperature),
         max_tokens=int(args.max_tokens),
         top_k=args.top_k if args.top_k is None else int(args.top_k),
