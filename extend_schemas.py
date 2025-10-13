@@ -254,7 +254,7 @@ class Job:
             self.is_repair = False
             self.batch_num += 1
             self.attempts_for_current_round = 1
-            self.next_prompt = build_initial_prompt(self.combined_schema)
+            self.next_prompt = build_initial_prompt(self.combined_schema, self.current_tables, self.target)
 
 
 # ----------------------------- Adapter runner ---------------------------
