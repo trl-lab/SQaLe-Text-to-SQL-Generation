@@ -1,0 +1,20 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=2
+#SBATCH --job-name=TestingExtensions
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=6
+#SBATCH --time=08:00:00
+#SBATCH --output=slurm_output_questions_%A.out
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+cd $HOME/Github/text-to-sql-dataset/
+conda env create -f conda-env.yml
+
+source activate cowolff
+
+srun python create_questions.py --schema_folder data/test/extended --model Qwen/Qwen3-32B-FP8 --out data/test/questions.jsonl --tensor_parallel_size 2 --max_batch_size 64 --per_schema 5 --example_questions_file data/examples.csv

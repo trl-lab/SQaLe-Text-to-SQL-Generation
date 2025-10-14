@@ -69,10 +69,57 @@ def write_text(path: Path, text: str) -> None:
 def extract_sqlite_block(text: str) -> Optional[str]:
     """
     Extract the contents of the first ```sqlite ... ``` code block.
+    If not found, try ```sql ... ```, then any code block.
+    If still not found, extract from the first CREATE TABLE to the last ';'.
     """
-    pattern = re.compile(r"```sqlite\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
-    m = pattern.search(text or "")
-    return m.group(1).strip() if m else text
+    if not text:
+        return None
+
+    block = _extract_code_block(text, "sqlite")
+    if block:
+        return block
+
+    block = _extract_code_block(text, "sql")
+    if block:
+        return block
+
+    block = _extract_any_code_block(text)
+    if block:
+        return block
+
+    block = _extract_from_create_table(text)
+    if block:
+        return block
+
+    return text.strip()
+
+
+def _extract_code_block(text: str, lang: str) -> Optional[str]:
+    pattern = re.compile(rf"```{lang}\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+    m = pattern.search(text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _extract_any_code_block(text: str) -> Optional[str]:
+    pattern = re.compile(r"```[\w-]*\s*(.*?)\s*```", re.DOTALL)
+    m = pattern.search(text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _extract_from_create_table(text: str) -> Optional[str]:
+    create_match = re.search(r"(CREATE\s+TABLE\b.*?;)", text, re.IGNORECASE | re.DOTALL)
+    if create_match:
+        start = create_match.start()
+        last_semicolon = text.rfind(";")
+        if last_semicolon > start:
+            return text[start:last_semicolon + 1].strip()
+        else:
+            return text[start:].strip()
+    return None
 
 
 def get_sql_from_generated(content: str) -> Optional[str]:
@@ -127,7 +174,7 @@ def build_initial_prompt(existing_schema: str, current_tables: int, target_table
         "1) Use SQLite dialect only. Avoid non-SQLite features (no ENUM, SERIAL, IDENTITY, MONEY, schemas, arrays, COMMENT ON, etc.).\n"
         "2) Keep existing objects unchanged. Only add new CREATE TABLE statements (plus any necessary CREATE INDEX statements).\n"
         "3) Each new table should be a sensible and realistic extension to the existing schema.\n"
-        "4) Use similar naming schemes; keep names unique and consistent.\n"
+        "4) Use similar naming schemes, patterns and style.\n"
         "5) Output executable SQLite statements within ```sqlite ... ``` code blocks.\n"
         "6) Do not drop or alter existing tables. Make sure that there are no logical errors in the foreign key references.\n\n"
         "Existing schema:\n"
@@ -136,7 +183,8 @@ def build_initial_prompt(existing_schema: str, current_tables: int, target_table
 
 
 def build_repair_prompt(existing_schema: str, last_error: str, current_tables: int, target_tables: int) -> str:
-    add_tables = min(15, target_tables - current_tables)
+    minimum = random.randint(15, 25)
+    add_tables = min(minimum, target_tables - current_tables)
     return (
         "You previously produced SQL that failed to execute in SQLite. "
         f"Produce a corrected version that **only** adds {add_tables} new tables and is fully executable in SQLite.\n\n"
@@ -145,6 +193,8 @@ def build_repair_prompt(existing_schema: str, last_error: str, current_tables: i
         "Constraints:\n"
         "- SQLite dialect only; only DDL statements.\n"
         "- Keep existing tables unchanged; only CREATE TABLE for the 15 new tables (and optional CREATE INDEX statements).\n\n"
+        "- Output executable SQLite statements within ```sqlite ... ``` code blocks.\n\n"
+        "- Do not drop or alter existing tables. Ensure no logical errors in foreign key references.\n"
         f"SQLite error to address:\n{last_error}\n\n"
         "Existing schema:\n"
         f"{existing_schema}\n"
@@ -221,21 +271,17 @@ class Job:
             self.next_prompt = build_repair_prompt(self.combined_schema, self.last_error or "", self.current_tables, self.target)
         else:
             # Give up on this round/file
-            target_dir = self.out_dir if self.out_dir else self.path.parent
-            failed_out = target_dir / f"{self.path.stem}_{self.current_tables}.failed.sql"
-            candidate_with_error = f"-- Execution failed: {self.last_error}\n{self.combined_schema}\n"
-            write_text(failed_out, candidate_with_error)
+            # target_dir = self.out_dir if self.out_dir else self.path.parent
+            # failed_out = target_dir / f"{self.path.stem}_{self.current_tables}.failed.sql"
+            # candidate_with_error = f"-- Execution failed: {self.last_error}\n{self.combined_schema}\n"
+            # write_text(failed_out, candidate_with_error)
             self.failed = True
             self.finished = True
             self.next_prompt = None
 
     def on_successful_addition(self, new_sql: str) -> None:
         # append the new block, write an intermediate
-        label = ""
-        if self.is_repair and self.attempts_for_current_round > 1:
-            label += f" attempt {self.attempts_for_current_round}"
-        label += ")"
-        self.combined_schema = f"{self.combined_schema.rstrip()}\n\n{label}\n{new_sql.strip()}\n"
+        self.combined_schema = f"{self.combined_schema.rstrip()}\n\n{new_sql.strip()}\n"
         self.current_tables = count_tables(self.combined_schema)
 
         # write intermediate file
@@ -414,7 +460,6 @@ def process_folder_batched(
 
                 candidate = (
                     f"{j.combined_schema.rstrip()}\n\n"
-                    f"-- Candidate addition (round {round_idx})\n"
                     f"{sql_block.strip()}\n"
                 )
                 ok, err = check_executable_sqlite(candidate)
@@ -425,6 +470,19 @@ def process_folder_batched(
                         pbar.update(1)
                         completed_names.add(j.path.name)
                 else:
+                    new_extract = _extract_from_create_table(sql_block.strip())
+                    if new_extract:
+                        candidate = (
+                            f"{j.combined_schema.rstrip()}\n\n"
+                            f"{new_extract.strip()}\n"
+                        )
+                        ok2, err2 = check_executable_sqlite(candidate)
+                        if ok2:
+                            j.on_successful_addition(new_extract)
+                            if j.finished and j.path.name not in completed_names:
+                                pbar.update(1)
+                                completed_names.add(j.path.name)
+                            continue
                     j.last_error = err or "Unknown SQLite error."
                     j.schedule_repair_or_fail()
     end_time = time.time()
@@ -442,7 +500,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--backend", type=str, default="vllm", choices=["vllm", "openai"], help="Adapter backend to use.")
     p.add_argument("--model", type=str, default="Qwen/Qwen3-14B-FP8", help="Model name (vLLM model path or OpenAI model ID).")
     p.add_argument("--openai-api-key", type=str, default=None, help="API key for OpenAI (the SDK may also read OPENAI_API_KEY env var).")
-    p.add_argument("--retries", type=int, default=3, help="Max attempts per batch for a file (including the first).")
+    p.add_argument("--retries", type=int, default=2, help="Max attempts per batch for a file (including the first).")
     p.add_argument("--out-dir", type=Path, default=None, help="Directory to write outputs (ignored with --in-place).")
     p.add_argument("--in-place", action="store_true", help="Overwrite the input files with the extended schemas.")
     # sampling / generation

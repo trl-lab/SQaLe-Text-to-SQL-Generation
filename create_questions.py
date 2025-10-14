@@ -182,6 +182,7 @@ def main():
     parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens to generate")
     parser.add_argument("--top_k", type=int, default=None, help="Top-k sampling (default -1 = disabled)")
     parser.add_argument("--tensor_parallel_size", type=int, default=2, help="vLLM tensor parallel size")
+    parser.add_argument("--max_batch_size", type=int, default=15, help="Max batch size for vLLM (will be capped at 32)")
     args = parser.parse_args()
 
     print("Loading example questions...")
@@ -211,7 +212,7 @@ def main():
     written = 0
 
     with open(args.out, "w", encoding="utf-8") as fout:
-        for batch in tqdm(list(chunked(work, BATCH_SIZE)), desc=f"Generating (batches of {BATCH_SIZE})", leave=False):
+        for batch in tqdm(list(chunked(work, args.max_batch_size)), desc=f"Generating (batches of {args.max_batch_size})", leave=False):
             prompts_meta = [build_prompt(schema_sql, examples_by_j, per_schema) for (_, schema_sql, per_schema) in batch]
             prompts = [pm[0] for pm in prompts_meta]
             target_js = [pm[1] for pm in prompts_meta]
