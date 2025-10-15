@@ -210,3 +210,5 @@ __marimo__/
 **.vscode
 **.DS_Store
 **.json
+**.out
+**.jsonl

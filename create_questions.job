@@ -17,4 +17,4 @@ conda env create -f conda-env.yml
 
 source activate cowolff
 
-srun python create_questions.py --schema_folder data/complete/schema_distr --model Qwen/Qwen3-32B-FP8 --out data/complete/questions.jsonl --tensor_parallel_size 2 --max_batch_size 64 --per_schema 5 --example_questions_file data/examples.csv --retries 4
+srun python create_questions.py --schema_folder data/complete/schema_distr --model Qwen/Qwen3-32B-FP8 --out data/complete/questions.jsonl --tensor_parallel_size 2 --max_batch_size 64 --per_schema 5 --example_questions_file data/examples.csv --retries 3

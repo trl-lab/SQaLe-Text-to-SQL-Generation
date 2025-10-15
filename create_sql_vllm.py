@@ -35,7 +35,7 @@ def chunked(seq: List, size: int) -> Iterable[List]:
     for i in range(0, len(seq), size):
         yield seq[i:i+size]
 
-def load_items(questions_file: str, dedup: bool = True) -> List[Tuple[str, str, str]]:
+def load_items(questions_file: str, dedup: bool = True, start_index: int = 0, end_index: int = -1) -> List[Tuple[str, str, str]]:
     """
     Load (prompt, schema, schema_file) items from questions.jsonl produced by generate_questions.py.
     Dedups by (schema_file, question).
@@ -57,6 +57,9 @@ def load_items(questions_file: str, dedup: bool = True) -> List[Tuple[str, str, 
         seen.add(key)
 
         items.append((question, schema_sql, schema_file))
+    if end_index < 0:
+        end_index = len(items)
+    items = items[start_index:end_index]
     return items
 
 def main():
@@ -81,12 +84,16 @@ def main():
                         help="Temperature for vote/critique passes (default: 0.0)")
     parser.add_argument("--vote_top_p", type=float, default=1.0,
                         help="Top-p for vote/critique passes (default: 1.0)")
-    parser.add_argument("--max_model_len", type=int, default=21000,
-                        help="Max model context length for vLLM (default: 21000)")
+    parser.add_argument("--max_model_len", type=int, default=35000,
+                        help="Max model context length for vLLM (default: 35000)")
+    parser.add_argument("--start_index", type=int, nargs="?", default=0,
+                        help="Start index in questions.jsonl (default: 0)")
+    parser.add_argument("--end_index", type=int, nargs="?", default=-1,
+                        help="End index in questions.jsonl (default: -1, meaning all)")
     args = parser.parse_args()
 
     # 1) Load items
-    items_all: List[Tuple[str, str, str]] = load_items(args.questions_file, dedup=True)
+    items_all: List[Tuple[str, str, str]] = load_items(args.questions_file, dedup=True, start_index=args.start_index, end_index=args.end_index)
     if not items_all:
         print("No valid (question, schema) pairs found. Exiting.")
         return

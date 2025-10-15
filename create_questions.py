@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 Generate semi-synthetic questions from SQL schemas using vLLM library directly
-Runs inference in fixed-size batches of 32 prompts and shows overall progress.
+Runs inference in fixed-size batches (capped at 32) and shows overall progress.
 Ensures example questions shown to the model match the required number of joins.
+
+Now with retry logic:
+- If a response fails to parse a plaintext code block (0 extracted lines), the script
+  will retry that specific item up to --retries times with a stricter format reminder.
 """
 
 import os
@@ -20,7 +24,7 @@ from vllm import LLM, SamplingParams
 from ReFoRCE.utils import extract_code_blocks  # keep your existing helper
 
 AVG_QUESTIONS_PER_SCHEMA = 10
-BATCH_SIZE = 32  # always 32 at a time
+BATCH_SIZE = 32  # hard cap per vLLM call
 NUMBER_OF_EXAMPLES = 4  # number of exemplar questions to include in the prompt (from the CSV file)
 
 SYSTEM_PREFIX = (
@@ -167,6 +171,17 @@ def parse_plaintext_block(raw: str) -> List[str]:
             out.append(s)
     return out
 
+def build_retry_prompt(base_prompt: str, attempt_idx: int) -> str:
+    """Append a progressively stricter format reminder for retries."""
+    # attempt_idx: 1-based for readability in the appended note
+    note = (
+        "\n\n# FORMAT REMINDER (retry {n})\n"
+        "Return ONLY one code fence labeled exactly ```plaintext ... ``` enclosing the questions, "
+        "with one question per line. No extra text before or after the fence. "
+        "Do not include notes, explanations, or any other markdown.".format(n=attempt_idx)
+    )
+    return base_prompt + note
+
 def chunked(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
@@ -183,6 +198,7 @@ def main():
     parser.add_argument("--top_k", type=int, default=None, help="Top-k sampling (default -1 = disabled)")
     parser.add_argument("--tensor_parallel_size", type=int, default=2, help="vLLM tensor parallel size")
     parser.add_argument("--max_batch_size", type=int, default=15, help="Max batch size for vLLM (will be capped at 32)")
+    parser.add_argument("--retries", type=int, default=3, help="Max retry rounds for items that fail to parse a plaintext code block")
     args = parser.parse_args()
 
     print("Loading example questions...")
@@ -213,20 +229,63 @@ def main():
         work.append((os.path.basename(file), schema_sql, args.per_schema))
 
     written = 0
+    hard_cap = min(int(args.max_batch_size), BATCH_SIZE)
 
     with open(args.out, "w", encoding="utf-8") as fout:
-        for batch in tqdm(list(chunked(work, args.max_batch_size)), desc=f"Generating (batches of {args.max_batch_size})", leave=False):
+        # Process in batches for efficiency
+        for batch in tqdm(list(chunked(work, hard_cap)), desc=f"Generating (batches of {hard_cap})", leave=False):
+            # Build initial prompts & meta
             prompts_meta = [build_prompt(schema_sql, examples_by_j, per_schema) for (_, schema_sql, per_schema) in batch]
-            prompts = [pm[0] for pm in prompts_meta]
+            base_prompts = [pm[0] for pm in prompts_meta]
             target_js = [pm[1] for pm in prompts_meta]
             examples_js = [pm[2] for pm in prompts_meta]
 
-            try:
-                outputs = llm.generate(prompts, sampling_params=sampling, use_tqdm=False)
+            # Track which indices are still pending due to parse failure
+            pending = list(range(len(batch)))
+            # Store the last raw text for debugging (optional)
+            last_raw: Dict[int, str] = {}
+
+            # Try initial + retries
+            for attempt in range(0, args.retries + 1):
+                if not pending:
+                    break
+
+                # Prepare prompts for this attempt: original on attempt 0, stricter thereafter
+                attempt_prompts = []
+                for idx in pending:
+                    p = base_prompts[idx]
+                    if attempt > 0:
+                        p = build_retry_prompt(p, attempt)
+                    attempt_prompts.append(p)
+
+                try:
+                    outputs = llm.generate(attempt_prompts, sampling_params=sampling, use_tqdm=False)
+                except Exception as e:
+                    print(f"[WARN] Batch attempt {attempt} failed with error: {e}")
+                    # On a hard vLLM error, move to next attempt for all pending
+                    continue
+
                 timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                for (schema_file, schema_sql, per_schema), out, target_j, examples_j in zip(batch, outputs, target_js, examples_js):
+
+                # Evaluate results; keep those that parsed, retain others in 'pending'
+                next_pending = []
+                for sub_i, idx in enumerate(pending):
+                    (schema_file, schema_sql, per_schema) = batch[idx]
+                    target_j = target_js[idx]
+                    examples_j = examples_js[idx]
+
+                    out = outputs[sub_i]
                     raw = out.outputs[0].text if out.outputs else ""
+                    last_raw[idx] = raw
+
                     candidates = parse_plaintext_block(raw)
+                    # Consider it a parse failure ONLY if we got zero lines.
+                    if len(candidates) == 0:
+                        # keep for another retry
+                        next_pending.append(idx)
+                        continue
+
+                    # success path
                     questions = [q for q in candidates if q][:per_schema]
                     for q in questions:
                         rec = {
@@ -241,10 +300,14 @@ def main():
                         }
                         fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
                         written += 1
-            except Exception as e:
-                # Keep going on individual batch failures
-                print(f"[WARN] Batch failed with error: {e}")
-                continue
+
+                pending = next_pending
+
+            # If anything is still pending after retries, log a warning but keep going
+            if pending:
+                for idx in pending:
+                    schema_file = batch[idx][0]
+                    print(f"[WARN] Could not parse plaintext block for {schema_file} after {args.retries} retries.")
 
     print(f"Wrote {written} questions to {args.out}")
 
