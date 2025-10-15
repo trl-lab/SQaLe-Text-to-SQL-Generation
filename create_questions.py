@@ -153,6 +153,24 @@ def build_prompt(schema_sql: str, examples_by_j: Dict[int, List[str]], count: in
         "Only diverge from this requirement if the schema does not contain enough tables to support that many joins.\n\n"
     )
 
+    # Add task diversity instruction
+    prompt += (
+        "Vary the types of tasks you ask for (e.g., retrieval, aggregation, filtering, sorting, grouping, average etc.). One question could also require multiple such operations. "
+        "Make sure the questions are realistic and relevant to the schema provided. "
+        "Do not repeat or paraphrase the examples.\n\n"
+    )
+
+    # 50/50 chance of adding explicit instruction for schema and value-awareness. If not, the model is prompted to be vague
+    if random.random() < 0.5:
+        prompt += (
+            "Make sure the questions are specific to the schema provided, "
+            "and use table/column names and values that could exist in the schema.\n\n"
+        )
+    else:
+        prompt += (
+            "The questions should be more vague and do not need to reference specific table/column names or values.\n\n"
+        )
+
     prompt += (
         f"Please provide {count} questions.\n"
         "Use the following format for your response and put it into the plaintext code box:\n"
