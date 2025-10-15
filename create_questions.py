@@ -193,6 +193,9 @@ def main():
     print(f"Loaded {total_examples} valid example questions with join labels.")
 
     sql_files = sorted(glob.glob(os.path.join(args.schema_folder, "*.sql")))
+    # Remove files that contain "failed" in their name
+    sql_files = [f for f in sql_files if "failed" not in os.path.basename(f).lower()]
+    
     print(f"Found {len(sql_files)} schema files.")
 
     # Init vLLM engine once

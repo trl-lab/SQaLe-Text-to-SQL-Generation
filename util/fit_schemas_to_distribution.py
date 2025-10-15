@@ -21,9 +21,9 @@ def get_probability_distribution(mode, max_val):
 
     # Find the peak index
     peak_idx = np.argmax(y)
-    # Linearly interpolate from 0.5 at x_min to y[peak_idx] (which is 1) at the peak
+    # Linearly interpolate from 0.7 at x_min to y[peak_idx] (which is 1) at the peak
     if peak_idx > 0:
-        y[:peak_idx] = np.linspace(0.5, 1.0, peak_idx)
+        y[:peak_idx] = np.linspace(0.7, 1.0, peak_idx)
     # No noise added
     y[x > max_val] = 0  # strictly 0 above max_val
     y = np.clip(y, 0, None)
@@ -74,9 +74,9 @@ def count_create_tables(sql_text: str) -> int:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Count CREATE TABLEs in .sql files and semi-randomly delete files to match a target distribution."
+        description="Count CREATE TABLEs in .sql files and copy a semi-random subset to match a target distribution."
     )
-    parser.add_argument("folder", type=Path, help="Folder containing .sql files")
+    parser.add_argument("folder", type=Path, help="Folder containing files to sample")
     parser.add_argument(
         "--ext", default=".sql", help="File extension to consider (default: .sql)"
     )
@@ -98,13 +98,18 @@ def main():
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Actually delete/move files. Without this flag, performs a dry run.",
+        help="Actually copy files to --dest-dir. Without this flag, performs a dry run.",
     )
     parser.add_argument(
-        "--trash-dir",
+        "--dest-dir",
         type=Path,
-        default=None,
-        help="If provided, move files here instead of deleting. The directory will be created if it doesn't exist.",
+        required=False,
+        help="Destination directory to copy the selected files into (relative paths preserved). Required with --apply.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="If set, overwrite existing files in --dest-dir.",
     )
     parser.add_argument(
         "--report",
@@ -120,7 +125,14 @@ def main():
     if not folder.is_dir():
         raise SystemExit(f"Folder not found: {folder}")
 
+    if args.apply and not args.dest_dir:
+        raise SystemExit("--dest-dir is required when using --apply")
+
     files = sorted(p for p in folder.rglob(f"*{args.ext}") if p.is_file())
+
+    # Remove files that contain "failed" in their name
+    files = [f for f in files if "failed" not in f.name.lower()]
+
     if not files:
         raise SystemExit(f"No files with extension '{args.ext}' found in {folder}")
 
@@ -130,7 +142,6 @@ def main():
         try:
             text = p.read_text(encoding="utf-8", errors="ignore")
         except Exception:
-            # Retry with latin-1 fallback
             text = p.read_text(encoding="latin-1", errors="ignore")
         file_counts[p] = count_create_tables(text)
 
@@ -141,17 +152,12 @@ def main():
     observed_hist = Counter(counts)
 
     # Target distribution
-    max_val = args.max_val if args.max_val is not None else observed_max
-    if max_val < observed_max:
-        print(
-            f"Warning: --max-val ({max_val}) < observed max ({observed_max}); adjusting to observed max."
-        )
-        max_val = observed_max
+    max_val = args.max_val if args.max_val is not None else 350
 
-    mode = args.mode if args.mode is not None else max(1, round(0.4 * max_val))
+    mode = args.mode if args.mode is not None else 100
     target_probs = get_probability_distribution(mode, max_val)
 
-    # Target counts per bucket (rounded). We'll cap by how many we actually have.
+    # Target counts per bucket (rounded)
     target_counts = {k: int(round(target_probs[k] * total_files)) for k in range(max_val + 1)}
 
     # Build bucket -> list of files
@@ -159,82 +165,74 @@ def main():
     for p, c in file_counts.items():
         buckets[c].append(p)
 
-    # Decide which files to KEEP per bucket
+    # Decide which files to COPY per bucket
     keep = set()
-    delete = set()
+    skip = set()
     decisions = []  # (path, count, action)
 
     for k in range(max_val + 1):
         bucket_files = buckets.get(k, [])
         n_have = len(bucket_files)
         n_target = target_counts.get(k, 0)
-        # We can only keep up to what's available
         n_keep = min(n_have, n_target)
 
-        # semi-random selection (stable with seed)
         random.shuffle(bucket_files)
         to_keep = set(bucket_files[:n_keep])
-        to_delete = set(bucket_files[n_keep:])
+        to_skip = set(bucket_files[n_keep:])
 
         keep.update(to_keep)
-        delete.update(to_delete)
+        skip.update(to_skip)
 
-    # If the target asked for more files in some buckets than we had,
-    # we simply keep everything in those buckets (can't synthesize new files).
-
-    # Apply deletions / moves
+    # Apply copies
     if args.apply:
-        if args.trash_dir:
-            trash = args.trash_dir
-            trash.mkdir(parents=True, exist_ok=True)
-
-        for p in sorted(delete):
-            if args.trash_dir:
-                # preserve relative path
-                rel = p.relative_to(folder)
-                dest = trash / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(p), str(dest))
-                action = f"MOVED -> {dest}"
-            else:
-                os.remove(p)
-                action = "DELETED"
-            decisions.append((p, file_counts[p], action))
+        dest_root = args.dest_dir
+        dest_root.mkdir(parents=True, exist_ok=True)
 
         for p in sorted(keep):
-            decisions.append((p, file_counts[p], "KEPT"))
+            rel = p.relative_to(folder)
+            dest = dest_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists() and not args.overwrite:
+                action = "SKIPPED_EXISTS"
+            else:
+                shutil.copy2(str(p), str(dest))
+                action = f"COPIED -> {dest}"
+            decisions.append((p, file_counts[p], action))
+
+        for p in sorted(skip):
+            decisions.append((p, file_counts[p], "SKIP"))
 
     else:
         # Dry run
-        for p in sorted(delete):
-            decisions.append((p, file_counts[p], "WOULD_DELETE"))
         for p in sorted(keep):
-            decisions.append((p, file_counts[p], "KEEP"))
+            decisions.append((p, file_counts[p], "WOULD_COPY"))
+        for p in sorted(skip):
+            decisions.append((p, file_counts[p], "SKIP"))
 
     # Summary
     kept_hist = Counter(file_counts[p] for p in keep)
-    del_hist = Counter(file_counts[p] for p in delete)
+    skip_hist = Counter(file_counts[p] for p in skip)
 
     print("\n=== Summary ===")
     print(f"Total files: {total_files}")
     print(f"Observed max tables/file: {observed_max}")
     print(f"Target mode: {mode}, max_val: {max_val}")
     print(f"Dry run: {not args.apply}")
-    if args.trash_dir:
-        print(f"Trash dir: {args.trash_dir}")
+    if args.dest_dir:
+        print(f"Destination dir: {args.dest_dir}")
+        print(f"Overwrite: {args.overwrite}")
 
     def fmt_hist(h):
         return ", ".join(f"{k}:{h[k]}" for k in range(0, max_val + 1))
 
     print("\nObserved histogram: " + fmt_hist(observed_hist))
     print("Target histogram:   " + fmt_hist(Counter({k: target_counts.get(k, 0) for k in range(max_val + 1)})))
-    print("Kept histogram:     " + fmt_hist(kept_hist))
-    print("Deleted histogram:  " + fmt_hist(del_hist))
+    print("Copied histogram:   " + fmt_hist(kept_hist))
+    print("Skipped histogram:  " + fmt_hist(skip_hist))
 
     # Optional CSV report
     if args.report:
         import csv
-
         with args.report.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["path", "tables_in_file", "action"])

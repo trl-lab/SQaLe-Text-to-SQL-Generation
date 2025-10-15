@@ -1,55 +1,64 @@
+#!/usr/bin/env python3
 import os
 import shutil
 import argparse
 from math import ceil
 
-def split_files(input_dir, output_dir, split_number):
-    # Ensure input directory exists
-    if not os.path.isdir(input_dir):
-        raise ValueError(f"Input directory does not exist: {input_dir}")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Split files of a given type into numbered subfolders."
+    )
+    parser.add_argument(
+        "filetype",
+        help="File extension to group (e.g. '.jpg', '.txt', 'csv').",
+    )
+    parser.add_argument(
+        "num_files",
+        type=int,
+        help="Number of files per subfolder."
+    )
+    parser.add_argument(
+        "--src",
+        default=".",
+        help="Source directory (default: current directory)."
+    )
+    parser.add_argument(
+        "--dest",
+        default="split_output",
+        help="Destination base folder (default: ./split_output)."
+    )
 
-    # Create output directory if missing
-    os.makedirs(output_dir, exist_ok=True)
+    args = parser.parse_args()
+    filetype = args.filetype if args.filetype.startswith('.') else '.' + args.filetype
+    src_dir = os.path.abspath(args.src)
+    dest_dir = os.path.abspath(args.dest)
 
-    # Collect all files (ignore directories)
-    files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
-    total_files = len(files)
+    # Gather all matching files
+    all_files = [f for f in os.listdir(src_dir)
+                 if os.path.isfile(os.path.join(src_dir, f)) and f.endswith(filetype)]
 
-    if total_files == 0:
-        print("No files found in the input directory.")
+    if not all_files:
+        print(f"No files with extension '{filetype}' found in {src_dir}")
         return
 
-    # Calculate how many files per folder
-    files_per_folder = ceil(total_files / split_number)
+    os.makedirs(dest_dir, exist_ok=True)
+    total = len(all_files)
+    chunks = ceil(total / args.num_files)
 
-    print(f"Distributing {total_files} files into {split_number} folders (~{files_per_folder} per folder).")
+    print(f"Found {total} '{filetype}' files. Splitting into {chunks} folders...")
 
-    # Split and copy files
-    for i in range(split_number):
-        subfolder_name = str(i + 1)
-        subfolder_path = os.path.join(output_dir, subfolder_name)
-        os.makedirs(subfolder_path, exist_ok=True)
+    for i in range(chunks):
+        start = i * args.num_files
+        end = start + args.num_files
+        subfolder_name = os.path.join(dest_dir, str(i + 1))
+        os.makedirs(subfolder_name, exist_ok=True)
 
-        start_idx = i * files_per_folder
-        end_idx = start_idx + files_per_folder
-        subset = files[start_idx:end_idx]
+        for f in all_files[start:end]:
+            shutil.move(os.path.join(src_dir, f), os.path.join(subfolder_name, f))
 
-        for filename in subset:
-            src = os.path.join(input_dir, filename)
-            dst = os.path.join(subfolder_path, filename)
-            shutil.copy2(src, dst)
-
-        print(f"Folder {subfolder_name}: {len(subset)} files")
+        print(f"Moved {len(all_files[start:end])} files to {subfolder_name}")
 
     print("Done!")
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Split files into numbered subfolders.")
-    parser.add_argument("--input", "-i", required=True, help="Path to input directory containing files.")
-    parser.add_argument("--output", "-o", required=True, help="Path to output directory where subfolders will be created.")
-    parser.add_argument("--split", "-s", type=int, required=True, help="Number of subfolders to create.")
-
-    args = parser.parse_args()
-
-    split_files(args.input, args.output, args.split)
+    main()

@@ -166,7 +166,8 @@ SYSTEM_INSTRUCTION = (
 )
 
 def build_initial_prompt(existing_schema: str, current_tables: int, target_tables: int) -> str:
-    add_tables = min(15, target_tables - current_tables)
+    minimum = random.randint(15, 25)
+    add_tables = min(minimum, target_tables - current_tables)
     return (
         "/no_think\n"
         f"Extend the following database schema with exactly {add_tables} NEW tables.\n\n"
@@ -187,15 +188,13 @@ def build_repair_prompt(existing_schema: str, last_error: str, current_tables: i
     add_tables = min(minimum, target_tables - current_tables)
     return (
         "You previously produced SQL that failed to execute in SQLite. "
-        f"Produce a corrected version that **only** adds {add_tables} new tables and is fully executable in SQLite.\n\n"
-        "Keep the same intent and relationships, but fix any issues that would break on SQLite "
+        "Keep the same relationships, but avoid any issues that would break on SQLite "
         "(e.g., unsupported types/constraints/ALTERs, bad references, reserved words, missing commas, etc.).\n\n"
         "Constraints:\n"
         "- SQLite dialect only; only DDL statements.\n"
-        "- Keep existing tables unchanged; only CREATE TABLE for the 15 new tables (and optional CREATE INDEX statements).\n\n"
+        f"- Keep existing tables unchanged; only CREATE TABLE for the {add_tables} new tables (and optional CREATE INDEX statements).\n\n"
         "- Output executable SQLite statements within ```sqlite ... ``` code blocks.\n\n"
         "- Do not drop or alter existing tables. Ensure no logical errors in foreign key references.\n"
-        f"SQLite error to address:\n{last_error}\n\n"
         "Existing schema:\n"
         f"{existing_schema}\n"
     )
@@ -271,10 +270,10 @@ class Job:
             self.next_prompt = build_repair_prompt(self.combined_schema, self.last_error or "", self.current_tables, self.target)
         else:
             # Give up on this round/file
-            # target_dir = self.out_dir if self.out_dir else self.path.parent
-            # failed_out = target_dir / f"{self.path.stem}_{self.current_tables}.failed.sql"
-            # candidate_with_error = f"-- Execution failed: {self.last_error}\n{self.combined_schema}\n"
-            # write_text(failed_out, candidate_with_error)
+            target_dir = self.out_dir if self.out_dir else self.path.parent
+            failed_out = target_dir / f"{self.path.stem}_{self.current_tables}.failed.sql"
+            candidate_with_error = f"-- Execution failed: {self.last_error}\n{self.combined_schema}\n"
+            write_text(failed_out, candidate_with_error)
             self.failed = True
             self.finished = True
             self.next_prompt = None
@@ -500,7 +499,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--backend", type=str, default="vllm", choices=["vllm", "openai"], help="Adapter backend to use.")
     p.add_argument("--model", type=str, default="Qwen/Qwen3-14B-FP8", help="Model name (vLLM model path or OpenAI model ID).")
     p.add_argument("--openai-api-key", type=str, default=None, help="API key for OpenAI (the SDK may also read OPENAI_API_KEY env var).")
-    p.add_argument("--retries", type=int, default=2, help="Max attempts per batch for a file (including the first).")
+    p.add_argument("--retries", type=int, default=3, help="Max attempts per batch for a file (including the first).")
     p.add_argument("--out-dir", type=Path, default=None, help="Directory to write outputs (ignored with --in-place).")
     p.add_argument("--in-place", action="store_true", help="Overwrite the input files with the extended schemas.")
     # sampling / generation

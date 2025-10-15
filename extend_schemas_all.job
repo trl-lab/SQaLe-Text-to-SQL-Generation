@@ -1,0 +1,23 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=2
+#SBATCH --job-name=ExampleArrayJob
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=7
+#SBATCH --time=01:20:00
+#SBATCH --array=1-10%2
+#SBATCH --output=slurm_array_exensions_%A_%a.out
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+cd $HOME/Github/text-to-sql-dataset/
+conda env create -f conda-env.yml
+
+# Activate your environment
+source activate cowolff
+
+# Run your code
+srun python extend_schemas.py --folder data/split/statements/${SLURM_ARRAY_TASK_ID} --model Qwen/Qwen3-32B-FP8 --out-dir data/complete/extended --tensor_parallel_size 2 --max-batch-size 64
