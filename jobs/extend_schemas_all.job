@@ -2,7 +2,7 @@
 
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=2
-#SBATCH --job-name=ExampleArrayJob
+#SBATCH --job-name=SchedulingAllSchemaExtensions
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=7
 #SBATCH --time=01:20:00

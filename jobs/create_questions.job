@@ -2,10 +2,10 @@
 
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=2
-#SBATCH --job-name=TestingExtensions
+#SBATCH --job-name=CreatingQuestions
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
-#SBATCH --time=08:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=slurm_output_questions_%A.out
 
 module purge
