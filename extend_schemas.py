@@ -53,6 +53,32 @@ from My_ReFoRCE.model import (
     AsyncOpenAIAdapter,
 )
 
+CREATE_TABLE_RE = re.compile(
+    r"""
+    (                       # capture the whole CREATE TABLE statement
+        CREATE\s+TABLE
+        (?:\s+IF\s+NOT\s+EXISTS)?   # optional IF NOT EXISTS
+        [\s\S]*?                    # table name + body, non-greedy
+        ;                           # terminating semicolon
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Matches a full CREATE [UNIQUE] INDEX ... ; statement (case-insensitive), across lines.
+CREATE_INDEX_RE = re.compile(
+    r"""
+    (                                   # capture the whole CREATE INDEX statement
+        CREATE\s+
+        (?:UNIQUE\s+)?INDEX             # CREATE INDEX or CREATE UNIQUE INDEX
+        (?:\s+IF\s+NOT\s+EXISTS)?       # optional IF NOT EXISTS
+        [\s\S]*?                        # index name, ON clause, columns, etc.
+        ;                               # terminating semicolon
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # ----------------------------- File I/O ---------------------------------
 
 def read_text(path: Path) -> str:
@@ -77,36 +103,51 @@ def extract_sqlite_block(text: str) -> Optional[str]:
 
     block = _extract_code_block(text, "sqlite")
     if block:
+        block = _extract_TABLE_and_INDEX_statements(block)
         return block
 
     block = _extract_code_block(text, "sql")
     if block:
+        block = _extract_TABLE_and_INDEX_statements(block)
         return block
 
     block = _extract_any_code_block(text)
     if block:
+        block = _extract_TABLE_and_INDEX_statements(block)
         return block
 
     block = _extract_from_create_table(text)
     if block:
+        block = _extract_TABLE_and_INDEX_statements(block)
         return block
 
     return text.strip()
 
 
 def _extract_code_block(text: str, lang: str) -> Optional[str]:
+    """
+    Returns the contents of the LAST code block with the given language.
+    If there are multiple such blocks, only the last is returned.
+    """
     pattern = re.compile(rf"```{lang}\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
-    m = pattern.search(text)
-    if m:
-        return m.group(1).strip()
+    matches = list(pattern.finditer(text))
+    if matches:
+        return matches[-1].group(1).strip()
+
+    if "```sqlite" in text:
+        code_split = text.split("```sqlite")[-1].strip()
+        return code_split
     return None
 
 
 def _extract_any_code_block(text: str) -> Optional[str]:
+    """
+    Returns the contents of the LAST code block (any language).
+    """
     pattern = re.compile(r"```[\w-]*\s*(.*?)\s*```", re.DOTALL)
-    m = pattern.search(text)
-    if m:
-        return m.group(1).strip()
+    matches = list(pattern.finditer(text))
+    if matches:
+        return matches[-1].group(1).strip()
     return None
 
 
@@ -120,6 +161,16 @@ def _extract_from_create_table(text: str) -> Optional[str]:
         else:
             return text[start:].strip()
     return None
+
+def _extract_TABLE_and_INDEX_statements(text: str) -> str:
+    """
+    Extract all CREATE TABLE and CREATE INDEX statements from the text.
+    """
+    if not text:
+        return ""
+    pattern = re.compile(r"\b(CREATE\s+(?:TABLE|INDEX)\b.*?;)", re.IGNORECASE | re.DOTALL)
+    matches = pattern.findall(text)
+    return "\n\n".join(m.strip() for m in matches if m.strip())
 
 
 def get_sql_from_generated(content: str) -> Optional[str]:
@@ -136,18 +187,65 @@ def get_sql_from_generated(content: str) -> Optional[str]:
         return m.group(1).strip()
     return content.strip()
 
+def _extract(pattern: re.Pattern, sql: str) -> List[str]:
+    return [m.group(1).strip() for m in pattern.finditer(sql or "")]
 
-def check_executable_sqlite(schema_sql: str) -> Tuple[bool, Optional[str]]:
+def filter_new_schema_sqlite(old_schema: str, new_schema: str) -> Tuple[bool, Optional[str], str]:
     """
-    Try executing against in-memory SQLite.
+    Load `old_schema` into an in-memory SQLite DB (single executescript call).
+    Then:
+      1) Try each CREATE TABLE from `new_schema` sequentially; keep only those that succeed.
+      2) Try each CREATE INDEX from `new_schema` sequentially; keep only those that succeed.
+
+    Returns:
+      (ok, error, filtered_sql)
+
+      - ok: False if executing `old_schema` failed; True otherwise.
+      - error: sqlite error string if `old_schema` failed; else None.
+      - filtered_sql: concatenation (with blank lines) of:
+            [successful NEW tables ...]
+            [successful NEW indexes ...]
+        in that order. Empty string if none.
+
+    Notes:
+      - Only CREATE TABLE / CREATE INDEX statements from `new_schema` are attempted/returned.
+      - Failed statements are skipped (not retried).
+      - PRAGMA foreign_keys = ON.
     """
     conn = sqlite3.connect(":memory:")
-    conn.execute("PRAGMA foreign_keys = ON;")
     try:
-        conn.executescript(schema_sql)
-        return True, None
-    except sqlite3.Error as e:
-        return False, str(e)
+        conn.execute("PRAGMA foreign_keys = ON;")
+
+        # 1) Execute old_schema in one shot
+        try:
+            conn.executescript(old_schema or "")
+        except sqlite3.Error as e:
+            return False, str(e), ""
+
+        # 2) Execute new CREATE TABLE statements sequentially
+        ok_tables: List[str] = []
+        for stmt in _extract(CREATE_TABLE_RE, new_schema):
+            try:
+                conn.executescript(stmt)
+                ok_tables.append(stmt)
+            except sqlite3.Error:
+                pass  # skip failed table
+
+        # 3) Execute new CREATE INDEX statements sequentially (after tables)
+        ok_indexes: List[str] = []
+        for stmt in _extract(CREATE_INDEX_RE, new_schema):
+            try:
+                conn.executescript(stmt)
+                ok_indexes.append(stmt)
+            except sqlite3.Error:
+                pass  # skip failed index
+
+        parts = []
+        if ok_tables:
+            parts.append("\n\n".join(ok_tables))
+        if ok_indexes:
+            parts.append("\n\n".join(ok_indexes))
+        return True, None, ("\n\n".join(parts))
     finally:
         conn.close()
 
@@ -169,14 +267,14 @@ def build_initial_prompt(existing_schema: str, current_tables: int, target_table
     minimum = random.randint(15, 25)
     add_tables = min(minimum, target_tables - current_tables)
     return (
-        "/no_think\n"
+        "/no_think"
         f"Extend the following database schema with exactly {add_tables} NEW tables.\n\n"
         "Requirements:\n"
         "1) Use SQLite dialect only. Avoid non-SQLite features (no ENUM, SERIAL, IDENTITY, MONEY, schemas, arrays, COMMENT ON, etc.).\n"
-        "2) Keep existing objects unchanged. Only add new CREATE TABLE statements (plus any necessary CREATE INDEX statements).\n"
+        "2) Keep existing objects unchanged. Only add new CREATE TABLE statements (plus any necessary CREATE INDEX statements). Do NOT write the existing CREATE TABLE statements again.\n"
         "3) Each new table should be a sensible and realistic extension to the existing schema.\n"
         "4) Use similar naming schemes, patterns and style.\n"
-        "5) Output executable SQLite statements within ```sqlite ... ``` code blocks.\n"
+        "5) Make sure (!!!!) the output are executable SQLite statements within ```sqlite ... ``` code blocks.\n"
         "6) Do not drop or alter existing tables. Make sure that there are no logical errors in the foreign key references.\n\n"
         "Existing schema:\n"
         f"{existing_schema}\n"
@@ -187,12 +285,12 @@ def build_repair_prompt(existing_schema: str, last_error: str, current_tables: i
     minimum = random.randint(15, 25)
     add_tables = min(minimum, target_tables - current_tables)
     return (
-        "You previously produced SQL that failed to execute in SQLite. "
-        "Keep the same relationships, but avoid any issues that would break on SQLite "
+        "/no_think"
+        "You previously produced SQL that failed to execute in SQLite.\n"
         "(e.g., unsupported types/constraints/ALTERs, bad references, reserved words, missing commas, etc.).\n\n"
         "Constraints:\n"
         "- SQLite dialect only; only DDL statements.\n"
-        f"- Keep existing tables unchanged; only CREATE TABLE for the {add_tables} new tables (and optional CREATE INDEX statements).\n\n"
+        f"- Keep existing tables unchanged; only write the CREATE TABLE statements for the {add_tables} new tables (and optional CREATE INDEX statements).\n\n"
         "- Output executable SQLite statements within ```sqlite ... ``` code blocks.\n\n"
         "- Do not drop or alter existing tables. Ensure no logical errors in foreign key references.\n"
         "Existing schema:\n"
@@ -241,6 +339,7 @@ class Job:
     # what to ask next (None if no prompt this round)
     next_prompt: Optional[str] = None
     is_repair: bool = False
+    generated_schema: str = ""
 
     def init_from_file(self) -> None:
         original = read_text(self.path).strip()
@@ -272,7 +371,7 @@ class Job:
             # Give up on this round/file
             target_dir = self.out_dir if self.out_dir else self.path.parent
             failed_out = target_dir / f"{self.path.stem}_{self.current_tables}.failed.sql"
-            candidate_with_error = f"-- Execution failed: {self.last_error}\n{self.combined_schema}\n"
+            candidate_with_error = f"-- Execution failed: {self.last_error}\n{self.generated_schema}\n"
             write_text(failed_out, candidate_with_error)
             self.failed = True
             self.finished = True
@@ -461,10 +560,13 @@ def process_folder_batched(
                     f"{j.combined_schema.rstrip()}\n\n"
                     f"{sql_block.strip()}\n"
                 )
-                ok, err = check_executable_sqlite(candidate)
+
+                ok, err, sqlite_block = filter_new_schema_sqlite(j.combined_schema.rstrip(), sql_block.strip())
+
+                j.generated_schema = sqlite_block
 
                 if ok:
-                    j.on_successful_addition(sql_block)
+                    j.on_successful_addition(sqlite_block)
                     if j.finished and j.path.name not in completed_names:
                         pbar.update(1)
                         completed_names.add(j.path.name)
@@ -475,7 +577,8 @@ def process_folder_batched(
                             f"{j.combined_schema.rstrip()}\n\n"
                             f"{new_extract.strip()}\n"
                         )
-                        ok2, err2 = check_executable_sqlite(candidate)
+                        ok2, err2, new_extract = filter_new_schema_sqlite(j.combined_schema.rstrip(), new_extract.strip())
+                        j.generated_schema = new_extract
                         if ok2:
                             j.on_successful_addition(new_extract)
                             if j.finished and j.path.name not in completed_names:
@@ -521,7 +624,7 @@ def make_adapter(args: argparse.Namespace) -> ModelAdapter:
         # Here we follow the provided signature by creating the vLLM engine and
         # passing it to the adapter if needed. Adjust to your exact adapter init.
         from vllm import LLM  # local import so openai-only users don't need vllm
-        engine = LLM(model=args.model, max_model_len=15000, tensor_parallel_size=args.tensor_parallel_size)
+        engine = LLM(model=args.model, max_model_len=25000, tensor_parallel_size=args.tensor_parallel_size)
         return VLLMAdapter(model=engine)
     else:
         return AsyncOpenAIAdapter(model=args.model, api_key=args.openai_api_key)

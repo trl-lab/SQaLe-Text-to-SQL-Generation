@@ -43,6 +43,28 @@ def load_example_questions(path: str) -> List[str]:
                 questions.add((q, number_of_joins))
     return list(questions)
 
+
+# Check for repeated template strings in the candidates
+def has_template_strings(strings: List[str]) -> bool:
+    templates = {
+        "<First Question>",
+        "<2nd Question>",
+        "<Nth Question>",
+        "```",
+        "<3rd Question>",
+        "<4th Question>",
+        "<5th Question>",
+        "plaintext",
+        "<Second Question>",
+        "<Fifth Question>",
+        "<|Start of a new question|>",
+    }
+    for s in strings:
+        for t in templates:
+            if t in s:
+                return True
+    return False
+
 # ---------------------------
 # New / updated helpers below
 # ---------------------------
@@ -161,10 +183,10 @@ def build_prompt(schema_sql: str, examples_by_j: Dict[int, List[str]], count: in
     )
 
     # 50/50 chance of adding explicit instruction for schema and value-awareness. If not, the model is prompted to be vague
-    if random.random() < 0.5:
+    if random.random() < 0.3:
         prompt += (
             "Make sure the questions are specific to the schema provided, "
-            "and use table/column names and values that could exist in the schema.\n\n"
+            "and use table/column names. Also try to incorporate specific values that could exist in the schema.\n\n"
         )
     else:
         prompt += (
@@ -297,6 +319,12 @@ def main():
                     last_raw[idx] = raw
 
                     candidates = parse_plaintext_block(raw)
+
+                    if has_template_strings(candidates):
+                        # treat as parse failure, keep for retry
+                        next_pending.append(idx)
+                        continue
+
                     # Consider it a parse failure ONLY if we got zero lines.
                     if len(candidates) == 0:
                         # keep for another retry

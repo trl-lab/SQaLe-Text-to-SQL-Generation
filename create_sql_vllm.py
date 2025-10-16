@@ -59,6 +59,11 @@ def load_items(questions_file: str, dedup: bool = True, start_index: int = 0, en
         items.append((question, schema_sql, schema_file))
     if end_index < 0:
         end_index = len(items)
+    length = len(items)
+    if start_index >= length:
+        return []
+    if end_index > length:
+        end_index = length
     items = items[start_index:end_index]
     return items
 

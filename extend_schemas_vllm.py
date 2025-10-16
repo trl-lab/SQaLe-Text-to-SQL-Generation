@@ -118,7 +118,7 @@ def build_initial_prompt(existing_schema: str) -> str:
         "   - Sensible columns with types valid in SQLite (INTEGER, REAL, TEXT, BLOB, NUMERIC).\n"
         "   - Foreign keys where appropriate, referencing existing or newly added tables.\n"
         "4) Use similar naming schemes; keep names unique and consistent.\n"
-        "5) Output executable SQLite statements within ```sqlite ... ``` code blocks.\n"
+        "5) Make sure (!!!!) the output are executable SQLite statements within ```sqlite ... ``` code blocks.\n"
         "6) Do not drop or alter existing tables.\n\n"
         "Existing schema:\n"
         f"{existing_schema}\n"

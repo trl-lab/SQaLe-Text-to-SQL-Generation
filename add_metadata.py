@@ -3,6 +3,7 @@ import json
 import re
 import sys
 from typing import List, Dict, Any
+import random
 
 # -- Optional: tiktoken for more realistic token counts (if installed) --
 def _load_tiktoken():
@@ -23,7 +24,7 @@ def count_tokens(text: str) -> int:
             return len(_TIKTOKEN.encode(text))
         except Exception:
             pass
-    return len(re.findall(r"[A-Za-z0-9_%/*.+\\-<>!=]+", text))
+    return len(re.findall(r"[A-Za-z0-9_%/*.+<>!=\\-]+", text))
 
 # -- SQL helpers --
 JOIN_RE = re.compile(r"\bjoin\b", re.IGNORECASE)
@@ -61,25 +62,69 @@ def count_tables_from_schema(schema: str) -> int:
         return 0
     return len(CREATE_TABLE_RE.findall(schema))
 
+def _split_top_level_commas(s: str):
+    parts, buf = [], []
+    depth = 0
+    in_single = in_double = in_back = False
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "'" and not in_double and not in_back:
+            in_single = not in_single
+        elif ch == '"' and not in_single and not in_back:
+            in_double = not in_double
+        elif ch == '`' and not in_single and not in_double:
+            in_back = not in_back
+        elif ch == '(' and not (in_single or in_double or in_back):
+            depth += 1
+        elif ch == ')' and not (in_single or in_double or in_back):
+            depth = max(0, depth - 1)
+
+        if ch == ',' and depth == 0 and not (in_single or in_double or in_back):
+            parts.append(''.join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+
+    if buf:
+        parts.append(''.join(buf).strip())
+    return parts
+
+
 def count_columns_from_schema(schema: str) -> int:
     """Count column definitions inside CREATE TABLE statements."""
     if not schema:
         return 0
 
-    # Matches CREATE TABLE ... ( ... )
-    table_defs = re.findall(r"CREATE\s+(?:TEMP|TEMPORARY\s+)?TABLE\s+\w+\s*\((.*?)\);",
-                            schema, flags=re.IGNORECASE | re.DOTALL)
+    pattern = r"""
+        CREATE\s+
+        (?:TEMP|TEMPORARY\s+)?TABLE\s+
+        (?:IF\s+NOT\s+EXISTS\s+)?              # optional IF NOT EXISTS
+        (?:                                     # table name (quoted/backticked/bracketed/bare; may be schema-qualified)
+           "(?:[^"]+)"
+           | `[^`]+`
+           | \[[^\]]+\]
+           | [\w.]+
+        )
+        \s*\(
+        (.*?)
+        \)
+        \s*;
+    """
+    table_defs = re.findall(pattern, schema, flags=re.IGNORECASE | re.DOTALL | re.VERBOSE)
+
     total_columns = 0
     for cols_block in table_defs:
-        # Split on commas that separate columns/constraints
-        parts = [c.strip() for c in cols_block.split(",")]
+        parts = _split_top_level_commas(cols_block)
         for col in parts:
             if not col:
                 continue
-            # Skip table-level constraints (start with PRIMARY, FOREIGN, UNIQUE, CONSTRAINT, etc.)
+            # Skip table-level constraints
             if re.match(r"^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT|INDEX)\b", col.strip(), re.IGNORECASE):
                 continue
             total_columns += 1
+
     return total_columns
 
 def extend_record(rec: Dict[str, Any]) -> Dict[str, Any]:
@@ -118,6 +163,7 @@ def extend_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 def process_stream(instream, outstream):
+    results = []
     for line_no, line in enumerate(instream, 1):
         line = line.strip()
         if not line:
@@ -125,19 +171,20 @@ def process_stream(instream, outstream):
         try:
             rec = json.loads(line)
         except json.JSONDecodeError as e:
+            print(f"Warning: JSON decode error on line {line_no}: {e}", file=sys.stderr)
             err_obj = {
                 "error": "JSONDecodeError",
                 "message": str(e),
                 "line_no": line_no,
                 "raw_line": line,
             }
-            outstream.write(json.dumps(err_obj, ensure_ascii=False) + "\n")
+            results.append(err_obj)
             continue
 
         try:
             out = extend_record(rec)
-            if out is not None:  # skip SELECT 1;
-                outstream.write(json.dumps(out, ensure_ascii=False) + "\n")
+            if out is not None:
+                results.append(out)
         except Exception as e:
             err_obj = {
                 "error": "ProcessingError",
@@ -145,7 +192,14 @@ def process_stream(instream, outstream):
                 "line_no": line_no,
                 "raw_record": rec,
             }
-            outstream.write(json.dumps(err_obj, ensure_ascii=False) + "\n")
+            results.append(err_obj)
+
+    # 🔀 Shuffle before writing
+    random.shuffle(results)
+
+    for obj in results:
+        outstream.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
 
 def main():
     parser = argparse.ArgumentParser(
