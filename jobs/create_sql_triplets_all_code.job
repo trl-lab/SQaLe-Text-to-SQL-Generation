@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --time=03:00:00
-#SBATCH --array=0-11%5
+#SBATCH --array=0-5%2
 #SBATCH --output=slurm_output/sql_creation%A.out
 
 module purge
@@ -18,4 +18,4 @@ conda env create -f conda-env.yml
 
 source activate cowolff
 
-srun python create_sql_vllm.py --questions_file data/complete/questions.jsonl --model Qwen/Qwen3-32B-FP8 --out data/complete/triplets/data_${SLURM_ARRAY_TASK_ID}.jsonl --tp 2 --batch_size 64 --start_index $((SLURM_ARRAY_TASK_ID * 512)) --end_index $((SLURM_ARRAY_TASK_ID * 512 + 512))
+srun python create_sql_vllm.py --questions_file data/complete/questions.jsonl --model /home/cwolff/Github/text-to-sql-dataset/model/Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf --out data/complete/triplets_code/data_${SLURM_ARRAY_TASK_ID}.jsonl --tp 2 --batch_size 64 --start_index $((SLURM_ARRAY_TASK_ID * 512)) --end_index $((SLURM_ARRAY_TASK_ID * 512 + 512))

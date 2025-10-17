@@ -5,8 +5,8 @@
 #SBATCH --job-name=SchedulingAllSchemaExtensions
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=7
-#SBATCH --time=02:30:00
-#SBATCH --array=1-2%2
+#SBATCH --time=03:00:00
+#SBATCH --array=41-80%8
 #SBATCH --output=slurm_output/extensions%A.out
 
 module purge

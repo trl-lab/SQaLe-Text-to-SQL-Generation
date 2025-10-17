@@ -37,10 +37,27 @@ def _extract_sql_from_fence(text: str) -> Optional[str]:
         last2 = matches2[-1]
         if last2.group(1).strip():
             return last2.group(1).strip()
-    # last-ditch: try to grab until first semicolon
-    semi_idx = text.find(";")
+
+    # Try to find just the opening ```sql without closing ```
+    sql_start = re.search(r"```sql\s*", text, re.IGNORECASE)
+    if sql_start:
+        start_idx = sql_start.end()
+        remaining_text = text[start_idx:]
+        semi_idx = remaining_text.find(";")
+        if semi_idx != -1:
+            return remaining_text[: semi_idx + 1].strip()
+        else:
+            return remaining_text.strip()
+
+    # As a last resort, try to find the last colon before the last semicolon
+    semi_idx = text.rfind(";")
     if semi_idx != -1:
-        return text[: semi_idx + 1].strip()
+        prev_colon = text.rfind(":", 0, semi_idx)
+        if prev_colon != -1 and prev_colon < semi_idx:
+            candidate = text[prev_colon + 1 : semi_idx + 1].strip()
+            if candidate:
+                return candidate
+
     return None
 
 def _compress_schema(db: InMemoryDB, max_cols: int = 8) -> str:
@@ -75,20 +92,21 @@ def _is_executable(sql: str, ddl: str) -> bool:
 def _gen_system_single() -> str:
     return (
         "You are a Text-to-SQL generator for SQLite.\n"
-        "Return EXACTLY ONE SQL statement inside a fenced code block:\n"
+        "Return ONE SQL statement inside a fenced code block:\n"
         "```sql\n<your single SQL here>\n```\n"
-        "No explanations, no extra text."
     )
 
 def _build_generation_prompt(task: str, compressed_schema: str) -> str:
     return (
-        f"/no_think Task: {task}\n\n"
+        f"Generate the SQLite statement for the following questions: {task}\n\n"
         "Constraints:\n"
         "- Dialect: SQLite\n"
-        "- ONE statement only (no multiple statements)\n"
         "- Use ONLY the given schema; do not invent tables/columns\n"
+        "- Return exactly ONE valid SQL statement that accomplishes the task\n"
+        "- Use JOINs if needed. In general try to write easy to read SQL.\n"
+        "- If needed, use subqueries or CTEs (WITH ...) to simplify complex queries for the user.\n"
         "- Put the SQL inside a ```sql\n<your single SQL here>\n``` fenced block\n\n"
-        f"Schema:\n{compressed_schema}\n"
+        f"This is the SQLite schema:\n{compressed_schema}\n"
     )
 
 def _vote_system() -> str:
@@ -202,6 +220,8 @@ def text2sql(
             except Exception as e:
                 # extraction/validation failed -> skip this candidate
                 # print(f"Candidate {idx} skipped: {e}")
+                last_error = f"{e} with sql `{extracted}`"
+                print(last_error)
                 continue
 
     # Ensure at least one candidate per item
