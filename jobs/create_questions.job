@@ -6,7 +6,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --time=04:00:00
-#SBATCH --output=slurm_output_questions_%A.out
+#SBATCH --output=slurm_output/questions_%A.out
+#SBATCH --array=0-70%8
 
 module purge
 module load 2025
@@ -17,4 +18,4 @@ conda env create -f conda-env.yml
 
 source activate cowolff
 
-srun python create_questions.py --schema_folder data/complete/schema_distr --model Qwen/Qwen3-32B-FP8 --out data/complete/questions.jsonl --tensor_parallel_size 2 --max_batch_size 64 --per_schema 5 --example_questions_file data/examples.csv --retries 3
+srun python create_questions.py --schema_csv data/complete/filelist.csv --model Qwen/Qwen3-32B-FP8 --out data/complete/questions/questions_${SLURM_ARRAY_TASK_ID}.jsonl --tensor_parallel_size 2 --max_batch_size 64 --per_schema 7 --example_questions_file data/examples.csv --retries 3 --start $((SLURM_ARRAY_TASK_ID * 5000)) --end $((SLURM_ARRAY_TASK_ID * 5000 + 5000))

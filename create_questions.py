@@ -228,7 +228,10 @@ def chunked(lst, n):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate and store semi-synthetic questions from schemas using vLLM batches.")
-    parser.add_argument("--schema_folder", type=str, default="data/statements", help="Folder with *.sql schemas")
+    parser.add_argument("--schema_folder", type=str, default=None, help="Folder with *.sql schemas")
+    parser.add_argument("--schema_csv", type=str, default=None, help="CSV file containing schema file paths (one per row or with a header column)")
+    parser.add_argument("--start", type=int, default=0, help="Start index (inclusive) into the CSV list")
+    parser.add_argument("--end", type=int, default=None, help="End index (exclusive) into the CSV list")
     parser.add_argument("--example_questions_file", type=str, default="data/examples.csv", help="CSV with 'nl_prompt' and 'num_joins' columns")
     parser.add_argument("--model", type=str, required=True, help="Path or name of the model to load with vLLM")
     parser.add_argument("--out", type=str, default="questions.jsonl", help="Output JSONL with (schema_file, schema_sql, question)")
@@ -248,11 +251,64 @@ def main():
     total_examples = sum(len(v) for v in examples_by_j.values())
     print(f"Loaded {total_examples} valid example questions with join labels.")
 
-    sql_files = sorted(glob.glob(os.path.join(args.schema_folder, "*.sql")))
-    # Remove files that contain "failed" in their name
-    sql_files = [f for f in sql_files if "failed" not in os.path.basename(f).lower()]
+    if args.schema_folder:
+        sql_files = sorted(glob.glob(os.path.join(args.schema_folder, "*.sql")))
+        # Remove files that contain "failed" in their name
+        sql_files = [f for f in sql_files if "failed" not in os.path.basename(f).lower()]
     
-    print(f"Found {len(sql_files)} schema files.")
+    # If a CSV of schema paths was provided, load and slice that instead of globbing the folder
+    if args.schema_csv:
+        import pandas as pd
+
+        print(f"Loading schema file list from CSV: {args.schema_csv}")
+        try:
+            df = pd.read_csv(args.schema_csv, header=0)
+            cols = {c.lower(): c for c in df.columns}
+            if 'path' in cols and 'filename' in cols:
+                folders = df[cols['path']].fillna('').astype(str).tolist()
+                filenames = df[cols['filename']].fillna('').astype(str).tolist()
+                paths = []
+                for folder, fname in zip(folders, filenames):
+                    folder = folder.strip()
+                    fname = fname.strip()
+                    if not fname:
+                        continue
+                    # If filename is absolute, prefer it
+                    if os.path.isabs(fname):
+                        paths.append(fname)
+                        continue
+                    # If folder is empty, take filename as-is (relative or absolute)
+                    if not folder:
+                        paths.append(fname)
+                        continue
+                    # Otherwise join folder and filename
+                    paths.append(os.path.join(folder, fname))
+            else:
+                raise ValueError("CSV must contain 'path' and 'filename' columns")
+        except Exception:
+            # fallback: try reading as a single-column CSV without header
+            with open(args.schema_csv, 'r', encoding='utf-8') as f:
+                paths = [line.strip() for line in f if line.strip()]
+
+        # apply slice
+        start = int(args.start) if args.start is not None else 0
+        end = int(args.end) if args.end is not None else None
+        sliced = paths[start:end]
+        # resolve to absolute or relative as-is; filter non-existent files but warn
+        sql_files = []
+        for p in sliced:
+            if os.path.isabs(p):
+                fp = p
+            else:
+                # try relative to cwd first then schema_folder
+                fp = p if os.path.exists(p) else os.path.join(args.schema_folder, p)
+            if not os.path.exists(fp):
+                print(f"[WARN] Listed schema file does not exist: {fp}")
+                continue
+            sql_files.append(fp)
+        print(f"Using {len(sql_files)} schema files from CSV (indices {start}:{end}).")
+    else:
+        print(f"Found {len(sql_files)} schema files.")
 
     # Init vLLM engine once
     sampling = SamplingParams(
