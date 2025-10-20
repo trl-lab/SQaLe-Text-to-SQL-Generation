@@ -9,7 +9,10 @@ class InMemoryDB:
     def __init__(self, schema: Any):
         self.conn = sqlite3.connect(":memory:")
         self.conn.execute("PRAGMA foreign_keys=ON;")
-        self._init_schema(schema)
+        cur = self.conn.cursor()
+        self._init_schema(schema, cur)
+        self.conn.commit()
+        cur.close()
 
     def close(self):
         try:
@@ -17,16 +20,19 @@ class InMemoryDB:
         except Exception:
             pass
 
-    def _init_schema(self, schema: Any):
+    def _init_schema(self, schema: Any, cur: sqlite3.Cursor):
         if isinstance(schema, str):
             ddl = schema
             # Remove custom dialect leftovers, keep SQLite-only constructs
             ddl = self._strip_non_sqlite(ddl)
-            for stmt in split_sql_statements(ddl):
-                s = stmt.strip()
-                if not s:
-                    continue
-                self.conn.execute(s)
+            cur.executescript(ddl)
+            # statements = split_sql_statements(ddl)
+            # print("Number of DDL statements:", len(statements))
+            # for stmt in statements:
+            #     s = stmt.strip()
+            #     if not s:
+            #         continue
+            #    self.conn.execute(s)
         else:
             raise TypeError("schema must be a DDL string with CREATE TABLE statements")
 

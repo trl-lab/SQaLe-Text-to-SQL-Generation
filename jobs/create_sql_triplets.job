@@ -4,8 +4,8 @@
 #SBATCH --gpus=2
 #SBATCH --job-name=SQLGenerations
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --time=00:40:00
+#SBATCH --cpus-per-task=8
+#SBATCH --time=01:00:00
 #SBATCH --output=slurm_output/sql_creation%A.out
 
 module purge
@@ -17,4 +17,4 @@ conda env create -f conda-env.yml
 
 source activate cowolff
 
-srun python create_sql_vllm.py --questions_file data/complete/questions.jsonl --model Qwen/Qwen3-32B-FP8 --out data/complete/data.jsonl --tp 2 --batch_size 64 --start_index 0 --end_index 128
+srun python create_sql_vllm.py --questions_file data/questions.jsonl --model Qwen/Qwen3-32B-FP8 --out data/data.jsonl --tp 2 --batch_size 128 --start_index 0 --end_index 100

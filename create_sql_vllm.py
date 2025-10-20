@@ -127,7 +127,7 @@ def main():
         for batch in chunked(items_all, args.batch_size):
             # Prepare (prompt, schema) pairs for this batch
             items_ps: List[Tuple[str, str]] = [(q, s) for (q, s, _schema_file) in batch]
-
+            
             # Call ReFoRCE text2sql once for the batch
             sqls: List[str] = text2sql(
                 items=items_ps,
