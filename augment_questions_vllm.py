@@ -36,6 +36,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from vllm import LLM, SamplingParams
+from datasets import load_dataset
 
 try:
     from tqdm import tqdm
@@ -47,7 +48,7 @@ from add_metadata import count_tokens  # ensure consistent token accounting
 
 BATCH_CAP = 32
 DEFAULT_BATCH_SIZE = 12
-DEFAULT_NUM_ALTERNATIVES = 3
+DEFAULT_NUM_ALTERNATIVES = 2
 SYSTEM_PREFIX = (
     "You are an expert at paraphrasing natural-language questions for SQL tasks. "
     "Produce faithful, diverse rewrites that keep the exact analytical intent of the provided SQL query."
@@ -71,14 +72,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
     parser.add_argument("--max-tokens", type=int, default=512, help="Maximum generation tokens")
     parser.add_argument("--top-k", type=int, default=None, help="Top-k sampling (default disables top-k)")
-    parser.add_argument("--tensor-parallel-size", type=int, default=2,
+    parser.add_argument("--tensor-parallel-size", type=int, default=1,
                         help="Tensor parallel size for vLLM engine")
-    parser.add_argument("--max-model-len", type=int, default=4096, help="Maximum model context length")
-    parser.add_argument("--retries", type=int, default=2,
+    parser.add_argument("--max-model-len", type=int, default=9182, help="Maximum model context length")
+    parser.add_argument("--retries", type=int, default=3,
                         help="Retries for responses that fail formatting checks (default: %(default)s)")
     parser.add_argument("--seed", type=int, default=None, help="Seed for deterministic prompt sampling")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Optional limit on the number of input records to process")
+    parser.add_argument("--start", type=int, default=0,
+                        help="Start index (inclusive) in the dataset/JSONL to begin processing (default: 0)")
+    parser.add_argument("--end", type=int, default=None,
+                        help="End index (exclusive) in the dataset/JSONL to stop processing (default: None, meaning iterate to the end)")
     parser.add_argument("--skip-original", action="store_true",
                         help="Do not copy original records to the output (only write paraphrases)")
     parser.add_argument("--no-progress", action="store_true",
@@ -197,6 +200,9 @@ def process_batch(
             raw = out.outputs[0].text if out.outputs else ""
             last_raw[global_idx] = raw
             paraphrases = parse_plaintext_block(raw)
+
+            # Remove items that contain 'Paraphrase'
+            paraphrases = [p for p in paraphrases if 'paraphrase' not in p.lower()]
             paraphrase_map[global_idx] = paraphrases
             if not paraphrases:
                 next_pending.append(global_idx)
@@ -206,7 +212,7 @@ def process_batch(
         entry = batch_entries[idx][0]
         original_question = entry.get("question", "")
         print(
-            f"[WARN] Failed to parse paraphrases after retries for question: {original_question[:80]}",
+            f"[WARN] Failed to parse paraphrases after retries for question: {original_question}",
             file=sys.stderr,
         )
 
@@ -240,10 +246,53 @@ def process_batch(
     return written
 
 
-def stream_jsonl(path: str, limit: Optional[int] = None):
-    with open(path, "r", encoding="utf-8") as handle:
+def stream_records(input_spec: str, start: int = 0, end: Optional[int] = None):
+    """Stream records either from a local JSONL file or a Hugging Face dataset.
+
+    Usage:
+      - Local JSONL: pass a filesystem path as before.
+      - Hugging Face: pass a dataset id like 'cwolff/small-text-to-sql' or prefix with 'hf://'.
+    """
+    # Heuristics: explicit hf:// or hf: prefix or a slash with no local path -> treat as HF dataset id.
+    is_hf = False
+    dataset_id = None
+    if isinstance(input_spec, str) and (input_spec.startswith("hf://") or input_spec.startswith("hf:")):
+        dataset_id = input_spec.split("//", 1)[-1] if input_spec.startswith("hf://") else input_spec.split(":", 1)[1]
+        is_hf = True
+    elif isinstance(input_spec, str) and "/" in input_spec and not os.path.exists(input_spec):
+        # looks like an HF repo id and not a local path
+        dataset_id = input_spec
+        is_hf = True
+
+    if is_hf:
+        try:
+            ds = load_dataset(dataset_id)
+        except Exception as exc:
+            print(f"[ERROR] Failed to load Hugging Face dataset '{dataset_id}': {exc}", file=sys.stderr)
+            raise
+
+        # Choose a split: prefer 'train' if present, otherwise the first available split.
+        if isinstance(ds, dict):
+            split_name = "train" if "train" in ds else list(ds.keys())[0]
+            dataset = ds[split_name]
+        else:
+            dataset = ds
+
+        for idx, item in enumerate(dataset):
+            if idx < start:
+                continue
+            if end is not None and idx >= end:
+                break
+            # Items from datasets are typically already dict-like
+            yield dict(item)
+        return
+
+    # Fallback to local JSONL reading for existing behavior
+    with open(input_spec, "r", encoding="utf-8") as handle:
         for idx, line in enumerate(handle):
-            if limit is not None and idx >= limit:
+            if idx < start:
+                continue
+            if end is not None and idx >= end:
                 break
             line = line.strip()
             if not line:
@@ -275,13 +324,15 @@ def main() -> None:
     llm = LLM(
         model=args.model,
         max_model_len=int(args.max_model_len),
+        max_num_seqs=32,
         tensor_parallel_size=int(args.tensor_parallel_size),
+        gpu_memory_utilization=0.85,
     )
 
-    progress_iter = stream_jsonl(args.input, limit=args.limit)
+    progress_iter = stream_records(args.input, start=args.start, end=args.end)
     if tqdm and not args.no_progress:
         # tqdm needs a known total; best-effort (may be None if limit enforced).
-        total = args.limit
+        total = args.end - args.start if args.end is not None else None
         progress_iter = tqdm(progress_iter, total=total, desc="Augmenting questions", unit="rec")  # type: ignore
 
     records_processed = 0
