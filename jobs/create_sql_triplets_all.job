@@ -4,10 +4,10 @@
 #SBATCH --gpus=2
 #SBATCH --job-name=SchedulingAllSQLGenerations
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --time=04:30:00
-#SBATCH --array=0-11%12
-#SBATCH --output=slurm_output/sql_creation%A.out
+#SBATCH --cpus-per-task=7
+#SBATCH --time=06:00:00
+#SBATCH --array=0-270%50
+#SBATCH --output=slurm_output/sql_creation_%A_%a.out
 
 module purge
 module load 2025

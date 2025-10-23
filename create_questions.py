@@ -100,7 +100,7 @@ def probability(j: int) -> float:
     if j == 0:
         return 0.15
     elif j == 1:
-        return 0.25
+        return 0.2
     # Linear decrease from j=2 to j=10
     m = 0.60 / 36  # slope chosen so total probability = 1
     return m * (10 - j)

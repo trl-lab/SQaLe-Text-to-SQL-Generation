@@ -81,12 +81,12 @@ def main():
                         help="How many (prompt,schema) pairs to process per text2sql call (default: 16)")
     parser.add_argument("--candidates", type=int, default=int(os.environ.get("CANDIDATES_PER_ITEM", "2")),
                         help="Number of single-candidate generations per item for voting (default: 2)")
-    parser.add_argument("--temperature", type=float, default=1.0,
-                        help="Sampling temperature for candidate generation (default: 1.0)")
+    parser.add_argument("--temperature", type=float, default=0.2,
+                        help="Sampling temperature for candidate generation (default: 0.2)")
     parser.add_argument("--top_p", type=float, default=0.95,
                         help="Top-p nucleus sampling for candidate generation (default: 0.95)")
-    parser.add_argument("--vote_temperature", type=float, default=0.0,
-                        help="Temperature for vote/critique passes (default: 0.0)")
+    parser.add_argument("--vote_temperature", type=float, default=0.1,
+                        help="Temperature for vote/critique passes (default: 0.1)")
     parser.add_argument("--vote_top_p", type=float, default=1.0,
                         help="Top-p for vote/critique passes (default: 1.0)")
     parser.add_argument("--max_model_len", type=int, default=35000,
@@ -112,7 +112,7 @@ def main():
     )
     adapter = VLLMAdapter(model=llm)
 
-    cfg_generate = GenerationConfig(temperature=args.temperature, top_p=args.top_p)
+    cfg_generate = GenerationConfig(temperature=args.temperature, top_p=args.top_p, max_tokens=6096)
     cfg_vote = GenerationConfig(temperature=args.vote_temperature, top_p=args.vote_top_p)
 
     # 3) Batch over items
@@ -121,33 +121,45 @@ def main():
 
     current_timestamp = time.time()
 
+    print(f"Starting SQL generation for {total} items...")
+
     with open(args.out, "w", encoding="utf-8") as fout:
         pbar = tqdm(total=total, desc="Generating SQL (batched)")
 
         for batch in chunked(items_all, args.batch_size):
-            # Prepare (prompt, schema) pairs for this batch
-            items_ps: List[Tuple[str, str]] = [(q, s) for (q, s, _schema_file) in batch]
-            
-            # Call ReFoRCE text2sql once for the batch
-            sqls: List[str] = text2sql(
-                items=items_ps,
-                adapter=adapter,
-                cfg_generate=cfg_generate,
-                cfg_vote=cfg_vote,
-                candidates_per_item=args.candidates,
-            )
+            try:
+                # Prepare (prompt, schema) pairs for this batch
+                items_ps: List[Tuple[str, str]] = [(q, s) for (q, s, _schema_file) in batch]
 
-            # Write aligned outputs
-            for (question, schema_sql, _schema_file), sql in zip(batch, sqls):
-                sql = (sql or "").strip()
-                record = {
-                    "prompt": " ".join(question.splitlines()).strip(),
-                    "sql_statement": " ".join(sql.splitlines()).strip(),
-                    "schema": " ".join(schema_sql.splitlines()).strip(),
-                    "cmd_type": annotate_sql_type(sql),
-                }
-                fout.write(json.dumps(record, ensure_ascii=False) + "\n")
-                written += 1
+                print("\n\n --- New Batch ---")
+                print("Processing batch starting with question:", batch[0][0][:50], "...")
+                
+                # Call ReFoRCE text2sql once for the batch
+                sqls: List[str] = text2sql(
+                    items=items_ps,
+                    adapter=adapter,
+                    cfg_generate=cfg_generate,
+                    cfg_vote=cfg_vote,
+                    candidates_per_item=args.candidates,
+                )
+
+                print("Batch processing complete.")
+
+                # Write aligned outputs
+                for (question, schema_sql, _schema_file), sql in zip(batch, sqls):
+                    sql = (sql or "").strip()
+                    record = {
+                        "prompt": " ".join(question.splitlines()).strip(),
+                        "sql_statement": " ".join(sql.splitlines()).strip(),
+                        "schema": " ".join(schema_sql.splitlines()).strip(),
+                        "cmd_type": annotate_sql_type(sql),
+                    }
+                    fout.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    written += 1
+                fout.flush()
+                os.fsync(fout.fileno())
+            except Exception as e:
+                print(f"Error processing batch starting with question: {batch[0][0][:50]}...: {e}")
             pbar.update(args.batch_size)
 
         pbar.close()
