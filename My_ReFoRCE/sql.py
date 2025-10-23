@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import List, Sequence, Tuple, Optional
+import time
 
 from My_ReFoRCE.in_memory_db import InMemoryDB
 from My_ReFoRCE.model import ModelAdapter, GenerationConfig
@@ -156,9 +157,9 @@ def text2sql(
         candidates_per_item: number of single-candidate generations per item
     """
     if cfg_generate is None:
-        cfg_generate = GenerationConfig(temperature=1.0, top_p=0.95, max_tokens=400)
+        cfg_generate = GenerationConfig(temperature=1.0, top_p=0.95, max_tokens=4096)
     if cfg_vote is None:
-        cfg_vote = GenerationConfig(temperature=0.0, top_p=1.0, max_tokens=256)
+        cfg_vote = GenerationConfig(temperature=0.0, top_p=1.0, max_tokens=4096)
 
     # 1) Prepare compressed schemas
     compressed_schemas: List[str] = []
@@ -179,6 +180,9 @@ def text2sql(
 
     per_item_candidates: List[List[str]] = [[] for _ in items]
     seen_norms_per_item: List[set] = [set() for _ in items]
+
+    print("Starting candidate generation...")
+    current_time = time.time()
 
     for _ in range(max(1, candidates_per_item)):
         outs = adapter.batch_generate(
@@ -221,8 +225,13 @@ def text2sql(
                 # extraction/validation failed -> skip this candidate
                 # print(f"Candidate {idx} skipped: {e}")
                 last_error = f"{e} with sql `{extracted}`"
-                print(last_error)
                 continue
+
+    print("Candidate generation complete.")
+    print(f"Time taken: {time.time() - current_time:.2f} seconds")
+
+    print("\nStarting voting...")
+    current_time = time.time()
 
     # Ensure at least one candidate per item
     for i, cands in enumerate(per_item_candidates):
@@ -240,6 +249,9 @@ def text2sql(
         system_prompt=_vote_system(),
         cfg=cfg_vote
     )
+
+    print("Voting complete.")
+    print(f"Time taken: {time.time() - current_time:.2f} seconds")
 
     # 4) Parse winners; map back to exact candidate when possible
     winners: List[str] = []

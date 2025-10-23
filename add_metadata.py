@@ -157,7 +157,6 @@ def extend_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     out["schema"] = schema
     out["token_count"] = token_count
     out["num_joins"] = num_joins
-    out["commands"] = commands
     out["num_tables"] = num_tables
     out["number_of_columns"] = number_of_columns
     return out

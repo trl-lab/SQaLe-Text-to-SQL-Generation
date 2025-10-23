@@ -213,3 +213,5 @@ __marimo__/
 **.out
 **.jsonl
 data/complete/schemas.zip
+your_database_backup.db
+data/questions.csv
