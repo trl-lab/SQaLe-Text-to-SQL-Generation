@@ -4,6 +4,7 @@ import re
 import sys
 from typing import List, Dict, Any
 import random
+from tqdm import tqdm
 
 # -- Optional: tiktoken for more realistic token counts (if installed) --
 def _load_tiktoken():
@@ -163,7 +164,7 @@ def extend_record(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 def process_stream(instream, outstream):
     results = []
-    for line_no, line in enumerate(instream, 1):
+    for line_no, line in tqdm(enumerate(instream, 1), desc="Processing records"):
         line = line.strip()
         if not line:
             continue
@@ -196,8 +197,13 @@ def process_stream(instream, outstream):
     # 🔀 Shuffle before writing
     random.shuffle(results)
 
-    for obj in results:
+    number_of_skipped = 0
+    for obj in tqdm(results, desc="Writing output"):
+        if len(obj["question"]) < 20 or len(obj["question"]) > 1024:
+            number_of_skipped += 1
+            continue
         outstream.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    print(f"Skipped {number_of_skipped} records with question length < 20 or > 1024 characters.", file=sys.stderr)
 
 
 def main():
