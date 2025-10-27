@@ -1,4 +1,4 @@
-name: cowolff
+name: sqale
 channels:
   - defaults
   - https://repo.anaconda.com/pkgs/main

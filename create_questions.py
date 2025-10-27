@@ -239,7 +239,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
     parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens to generate")
     parser.add_argument("--top_k", type=int, default=None, help="Top-k sampling (default -1 = disabled)")
-    parser.add_argument("--tensor_parallel_size", type=int, default=2, help="vLLM tensor parallel size")
+    parser.add_argument("--tensor_parallel_size", type=int, default=1, help="vLLM tensor parallel size")
     parser.add_argument("--max_batch_size", type=int, default=15, help="Max batch size for vLLM (will be capped at 32)")
     parser.add_argument("--retries", type=int, default=3, help="Max retry rounds for items that fail to parse a plaintext code block")
     args = parser.parse_args()

@@ -46,7 +46,7 @@ import numpy as np
 from tqdm import tqdm
 
 # ---------- import the provided classes (do not modify them) ----------
-from My_ReFoRCE.model import (
+from ReFoRCE.model import (
     GenerationConfig,
     ModelAdapter,
     VLLMAdapter,

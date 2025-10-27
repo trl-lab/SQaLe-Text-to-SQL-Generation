@@ -10,8 +10,8 @@ import time
 from tqdm import tqdm
 
 from vllm import LLM
-from My_ReFoRCE.model import VLLMAdapter, GenerationConfig
-from My_ReFoRCE.sql import text2sql
+from ReFoRCE.model import VLLMAdapter, GenerationConfig
+from ReFoRCE.sql import text2sql
 
 def annotate_sql_type(sql_text: str) -> str:
     t = (sql_text or "").strip().upper()

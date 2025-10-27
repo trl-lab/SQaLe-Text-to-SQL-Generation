@@ -178,7 +178,7 @@ def process_stream(instream, outstream):
                 "line_no": line_no,
                 "raw_line": line,
             }
-            results.append(err_obj)
+            # results.append(err_obj)
             continue
 
         try:
@@ -192,17 +192,23 @@ def process_stream(instream, outstream):
                 "line_no": line_no,
                 "raw_record": rec,
             }
-            results.append(err_obj)
+            # results.append(err_obj)
+            continue
 
     # 🔀 Shuffle before writing
     random.shuffle(results)
 
     number_of_skipped = 0
     for obj in tqdm(results, desc="Writing output"):
-        if len(obj["question"]) < 20 or len(obj["question"]) > 1024:
-            number_of_skipped += 1
+        try:
+            if len(obj["question"]) < 20 or len(obj["question"]) > 1024:
+                number_of_skipped += 1
+                continue
+            outstream.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"Warning: Error writing record on line {obj.get('line_no', 'N/A')}: {e}")
+            print(obj)
             continue
-        outstream.write(json.dumps(obj, ensure_ascii=False) + "\n")
     print(f"Skipped {number_of_skipped} records with question length < 20 or > 1024 characters.", file=sys.stderr)
 
 

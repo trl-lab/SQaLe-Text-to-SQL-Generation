@@ -1,160 +1,280 @@
-import sqlite3
-import io
-import csv
-from ReFoRCE.utils import hard_cut
-from google.cloud import bigquery
-from google.oauth2 import service_account
-import snowflake.connector
-import json
-import pandas as pd
-from func_timeout import func_timeout, FunctionTimedOut
+from __future__ import annotations
 
-class SqlEnv:
-    def __init__(self):
-        self.conns = {}
+import re
+from typing import List, Sequence, Tuple, Optional
+import time
 
-    def get_rows(self, cursor, max_len):
-        rows = []
-        current_len = 0
-        for row in cursor:
-            row_str = str(row)
-            rows.append(row)
-            if current_len + len(row_str) > max_len:
-                break
-            current_len += len(row_str)
-        return rows
+from My_ReFoRCE.in_memory_db import InMemoryDB
+from My_ReFoRCE.model import ModelAdapter, GenerationConfig
+from My_ReFoRCE.utils import split_sql_statements  # NEW: to verify single-statement
 
-    def get_csv(self, columns, rows):
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(columns)
-        writer.writerows(rows)
-        csv_content = output.getvalue()
-        output.close()
-        return csv_content
+# ----------------------------
+# Helpers
+# ----------------------------
+_WS = re.compile(r"\s+")
+_TRL_SEMI = re.compile(r";\s*$")
+SQL_FENCE_RE = re.compile(r"```sql\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
+ANY_FENCE_RE = re.compile(r"```+\s*(.*?)\s*```+", re.DOTALL)
 
-    def start_db_sqlite(self, sqlite_path):
-        if sqlite_path not in self.conns:
-            uri = f"file:{sqlite_path}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
-            self.conns[sqlite_path] = conn
-            # print(f"sqlite_path: {sqlite_path}, (self.conns): {self.conns.keys()}")
+def _normalize_sql(sql: str) -> str:
+    s = sql.strip()
+    s = _TRL_SEMI.sub("", s)
+    return _WS.sub(" ", s).lower()
 
-    def start_db_sf(self, ex_id):
-        if ex_id not in self.conns.keys():
-            snowflake_credential = json.load(open("./snowflake_credential.json"))
-            self.conns[ex_id] = snowflake.connector.connect(**snowflake_credential)
+def _ensure_semicolon(sql: str) -> str:
+    s = sql.strip()
+    return s if s.endswith(";") else s + ";"
 
-    def close_db(self):
-        # print("Close DB")
-        for key, conn in list(self.conns.items()):
-            try:
-                if conn:
-                    conn.close()
-                    # print(f"Connection {key} closed.")
-                    del self.conns[key]
-            except Exception as e:
-                print(f"When closing DB for {key}: {e}")
+def _extract_sql_from_fence(text: str) -> Optional[str]:
+    # Try to find all SQL fenced blocks and return the last one
+    matches = list(SQL_FENCE_RE.finditer(text))
+    if matches:
+        last = matches[-1]
+        if last.group(1).strip():
+            return last.group(1).strip()
+    # Try to find all generic fenced blocks and return the last one
+    matches2 = list(ANY_FENCE_RE.finditer(text))
+    if matches2:
+        last2 = matches2[-1]
+        if last2.group(1).strip():
+            return last2.group(1).strip()
 
-    def exec_sql_sqlite(self, sql_query, save_path=None, max_len=30000, sqlite_path=None):
-        cursor = self.conns[sqlite_path].cursor()
+    # Try to find just the opening ```sql without closing ```
+    sql_start = re.search(r"```sql\s*", text, re.IGNORECASE)
+    if sql_start:
+        start_idx = sql_start.end()
+        remaining_text = text[start_idx:]
+        semi_idx = remaining_text.find(";")
+        if semi_idx != -1:
+            return remaining_text[: semi_idx + 1].strip()
+        else:
+            return remaining_text.strip()
+
+    # As a last resort, try to find the last colon before the last semicolon
+    semi_idx = text.rfind(";")
+    if semi_idx != -1:
+        prev_colon = text.rfind(":", 0, semi_idx)
+        if prev_colon != -1 and prev_colon < semi_idx:
+            candidate = text[prev_colon + 1 : semi_idx + 1].strip()
+            if candidate:
+                return candidate
+
+    return None
+
+def _compress_schema(db: InMemoryDB, max_cols: int = 8) -> str:
+    lines = []
+    for t in db.table_names():
+        cols = db.columns(t)
+        prev = ", ".join(f"{c}:{typ}" for c, typ in cols[:max_cols])
+        if len(cols) > max_cols:
+            prev += ", ..."
+        lines.append(f"{t}({prev})")
+    return "\n".join(lines)
+
+def _is_single_statement(sql: str) -> bool:
+    stmts = [s for s in split_sql_statements(sql) if s.strip()]
+    return len(stmts) == 1
+
+def _is_executable(sql: str, ddl: str) -> bool:
+    """
+    Builds a fresh in-memory DB from the provided DDL and tries to execute the SQL.
+    Returns True iff it executes without error.
+    """
+    db = InMemoryDB(ddl)
+    try:
+        ok, _err = db.try_exec(sql)
+        return bool(ok)
+    finally:
+        db.close()
+
+# ----------------------------
+# Prompts
+# ----------------------------
+def _gen_system_single() -> str:
+    return (
+        "You are a Text-to-SQL generator for SQLite.\n"
+        "Return ONE SQL statement inside a fenced code block:\n"
+        "```sql\n<your single SQL here>\n```\n"
+    )
+
+def _build_generation_prompt(task: str, compressed_schema: str) -> str:
+    return (
+        f"Generate the SQLite statement for the following questions: {task}\n\n"
+        "Constraints:\n"
+        "- Dialect: SQLite\n"
+        "- Use ONLY the given schema; do not invent tables/columns\n"
+        "- Return exactly ONE valid SQL statement that accomplishes the task\n"
+        "- Use JOINs if needed. In general try to write easy to read SQL.\n"
+        "- If needed, use subqueries or CTEs (WITH ...) to simplify complex queries for the user.\n"
+        "- Put the SQL inside a ```sql\n<your single SQL here>\n``` fenced block\n\n"
+        f"This is the SQLite schema:\n{compressed_schema}\n"
+    )
+
+def _vote_system() -> str:
+    return (
+        "You are a SQL judge. You will receive several SQL candidates for the SAME task and schema.\n"
+        "Pick ONE of the provided candidates and return it INSIDE a ```sql fenced block, copied verbatim.\n"
+        "No commentary."
+    )
+
+def _build_vote_prompt(task: str, compressed_schema: str, candidates: List[str]) -> str:
+    labeled = []
+    for i, c in enumerate(candidates, 1):
+        labeled.append(f"<<CANDIDATE {i}>>\n```sql\n{c.strip()}\n```\n<<END>>")
+    cand_block = "\n".join(labeled)
+    return (
+        f"Task: {task}\n\n"
+        f"Schema:\n{compressed_schema}\n\n"
+        "Candidates:\n"
+        f"{cand_block}\n\n"
+        "Return ONLY the single best candidate inside a ```sql fenced block."
+    )
+
+# ----------------------------
+# Public API
+# ----------------------------
+def text2sql(
+    items: Sequence[Tuple[str, str]],
+    adapter: ModelAdapter,
+    *,
+    cfg_generate: Optional[GenerationConfig] = None,
+    cfg_vote: Optional[GenerationConfig] = None,
+    candidates_per_item: int = 2,
+    num_trials: int = 3,
+) -> List[str]:
+    """
+    Batch Text-to-SQL:
+      - For each (prompt, schema): call the model multiple times; each call produces ONE candidate in ```sql``` block.
+      - Each candidate is validated by executing it in an InMemoryDB built from the provided schema.
+      - Then do a single batch voting pass (one prompt per item) where the judge returns ONE winner in ```sql``` block.
+      - Returns one SQL string per input (with trailing semicolon ensured).
+
+    Args:
+        items: sequence of (prompt, schema_ddl_string)
+        adapter: ModelAdapter (e.g., VLLMAdapter)
+        cfg_generate: GenerationConfig for candidate generation (defaults are fine)
+        cfg_vote: GenerationConfig for judge (defaults deterministic)
+        candidates_per_item: number of single-candidate generations per item
+    """
+    if cfg_generate is None:
+        cfg_generate = GenerationConfig(temperature=1.0, top_p=0.95, max_tokens=4096)
+    if cfg_vote is None:
+        cfg_vote = GenerationConfig(temperature=0.0, top_p=1.0, max_tokens=4096)
+
+    # 1) Prepare compressed schemas
+    compressed_schemas: List[str] = []
+    for _, ddl in items:
+        if not isinstance(ddl, str):
+            raise TypeError("Each schema must be a DDL string with CREATE TABLE statements")
+        db = InMemoryDB(ddl)
         try:
-            cursor.execute(sql_query)
-            column_info = cursor.description
-            rows = self.get_rows(cursor, max_len)
-            columns = [desc[0] for desc in column_info]
-        except Exception as e:
-            return "##ERROR##"+str(e)
+            compressed_schemas.append(_compress_schema(db))
         finally:
+            db.close()
+
+    # 2) MULTI-CALL GENERATION: repeat batch calls; each call yields ONE candidate per item
+    # Build the generation prompts once
+    gen_prompts = [
+        _build_generation_prompt(task, comp) for (task, _), comp in zip(items, compressed_schemas)
+    ]
+
+    per_item_candidates: List[List[str]] = [[] for _ in items]
+    seen_norms_per_item: List[set] = [set() for _ in items]
+
+    print("Starting candidate generation...")
+    current_time = time.time()
+
+    for _ in range(max(1, candidates_per_item)):
+        outs = adapter.batch_generate(
+            prompts=gen_prompts,
+            system_prompt=_gen_system_single(),
+            cfg=cfg_generate
+        )  # shape: [len(items)][num_candidates_from_adapter]
+
+        # Extract exactly one candidate from this round per item (first valid fenced block found)
+        for idx, raw in enumerate(outs):
+            # Concatenate model outputs (some adapters may still split); take the first that parses
+            extracted: Optional[str] = None
             try:
-                cursor.close()
+                extracted = _extract_sql_from_fence(raw)
+
+                if not extracted:
+                    raise ValueError("Extraction failed: No SQL extracted from model output.")
+
+                # Ensure trailing semicolon for consistent splitting/execution
+                extracted = _ensure_semicolon(extracted)
+
+                # Enforce single-statement rule BEFORE dedup/execution
+                if not _is_single_statement(extracted):
+                    raise ValueError("Validation failed: Not a single SQL statement.")
+
+                norm = _normalize_sql(extracted)
+                if norm in seen_norms_per_item[idx]:
+                    raise ValueError("Deduplication failed: Duplicate candidate.")
+
+                # ---- NEW: executability check against the actual schema ----
+                _task, ddl = items[idx]
+                if not _is_executable(extracted, ddl):
+                    # not executable -> discard this candidate
+                    raise ValueError("Executability failed: SQL not executable against schema.")
+
+                # Passed all checks: record it
+                seen_norms_per_item[idx].add(norm)
+                per_item_candidates[idx].append(extracted)
             except Exception as e:
-                print("Failed to close cursor:", e)
+                # extraction/validation failed -> skip this candidate
+                # print(f"Candidate {idx} skipped: {e}")
+                last_error = f"{e} with sql `{extracted}`"
+                continue
 
-        if not rows:
-            return "No data found for the specified query.\n"
-        else:
-            csv_content = self.get_csv(columns, rows)
-            if save_path:
-                with open(save_path, 'w', newline='') as f:
-                    f.write(csv_content)
-                return 0
+    print("Candidate generation complete.")
+    print(f"Time taken: {time.time() - current_time:.2f} seconds")
+
+    print("\nStarting voting...")
+    current_time = time.time()
+
+    # Ensure at least one candidate per item
+    for i, cands in enumerate(per_item_candidates):
+        if not cands:
+            # last resort fallback: a trivially executable statement
+            per_item_candidates[i] = ["SELECT 1;"]
+
+    # 3) SINGLE BATCH VOTING (judge returns one fenced SQL per item)
+    vote_prompts = []
+    for (task, _), comp, cands in zip(items, compressed_schemas, per_item_candidates):
+        vote_prompts.append(_build_vote_prompt(task, comp, cands))
+
+    judge_outs = adapter.batch_generate(
+        prompts=vote_prompts,
+        system_prompt=_vote_system(),
+        cfg=cfg_vote
+    )
+
+    print("Voting complete.")
+    print(f"Time taken: {time.time() - current_time:.2f} seconds")
+
+    # 4) Parse winners; map back to exact candidate when possible
+    winners: List[str] = []
+    for cands, outs in zip(per_item_candidates, judge_outs):
+        chosen = None
+        extracted = None
+        # get first judged output, extract sql fence
+        if outs:
+            extracted = _extract_sql_from_fence(outs[0])
+        if extracted:
+            norm_choice = _normalize_sql(extracted)
+            # exact normalized match among candidates?
+            norm_map = {_normalize_sql(c): c for c in cands}
+            if norm_choice in norm_map:
+                chosen = norm_map[norm_choice]
             else:
-                return hard_cut(csv_content, max_len)
-            
-    def exec_sql_sf(self, sql_query, save_path, max_len, ex_id):
-        with self.conns[ex_id].cursor() as cursor:
-            try:
-                cursor.execute(sql_query)
-                column_info = cursor.description
-                rows = self.get_rows(cursor, max_len)
-                columns = [desc[0] for desc in column_info]
-            except Exception as e:
-                return "##ERROR##"+str(e)
+                # try loose match ignoring trailing semicolon
+                for c in cands:
+                    if extracted.rstrip(";\n\t ") == c.rstrip(";\n\t "):
+                        chosen = c
+                        break
+        if chosen is None:
+            chosen = cands[0]
+        winners.append(_ensure_semicolon(chosen))
 
-        if not rows:
-            return "No data found for the specified query.\n"
-        else:
-            csv_content = self.get_csv(columns, rows)
-            if save_path:
-                with open(save_path, 'w', newline='') as f:
-                    f.write(csv_content)
-                return 0
-            else:
-                return hard_cut(csv_content, max_len)
-
-    def exec_sql_bq(self, sql_query, save_path, max_len):
-        bigquery_credential = service_account.Credentials.from_service_account_file("./bigquery_credential.json")
-        client = bigquery.Client(credentials=bigquery_credential, project=bigquery_credential.project_id)
-        query_job = client.query(sql_query)
-        try:
-            result_iterator = query_job.result()
-        except Exception as e:
-            return "##ERROR##"+str(e)
-        rows = []
-        current_len = 0
-        for row in result_iterator:
-            if current_len > max_len:
-                break
-            current_len += len(str(dict(row)))
-            rows.append(dict(row))
-        df = pd.DataFrame(rows)
-        # Check if the result is empty
-        if df.empty:
-            return "No data found for the specified query.\n"
-        else:
-            # Save or print the results based on the is_save flag
-            if save_path:
-                df.to_csv(f"{save_path}", index=False)
-                return 0
-            else:
-                return hard_cut(df.to_csv(index=False), max_len)
-
-    def execute_sql_api(self, sql_query, ex_id, save_path=None, api="sqlite", max_len=30000, sqlite_path=None, timeout=300):
-        if api == "bigquery":
-            result = self.exec_sql_bq(sql_query, save_path, max_len)
-        elif api == "snowflake":
-            if ex_id not in self.conns.keys():
-                self.start_db_sf(ex_id)
-            result = self.exec_sql_sf(sql_query, save_path, max_len, ex_id)
-        elif api == "sqlite":
-            if sqlite_path not in self.conns.keys():
-                self.start_db_sqlite(sqlite_path)
-            result = self.execute_sqlite_with_timeout(sql_query, save_path, max_len, sqlite_path, timeout=300)
-            # result = self.exec_sql_sqlite(sql_query, save_path, max_len, sqlite_path)
-
-        if "##ERROR##" in str(result):
-            return {"status": "error", "error_msg": str(result)}
-        else:
-            return str(result)
-
-    def execute_sqlite_with_timeout(self, sql_query, save_path, max_len, sqlite_path, timeout=300):
-        try:
-            result = func_timeout(timeout, self.exec_sql_sqlite, args=(sql_query, save_path, max_len, sqlite_path))
-            return str(result)
-        except FunctionTimedOut:
-            print(f"##ERROR## {sql_query} Timed out")
-            return {"status": "error", "error_msg": f"##ERROR## {sql_query} Timed out\n"}
-        except Exception as e:
-            print(f"##ERROR## {sql_query} Exception: {e}")
-            return {"status": "error", "error_msg": f"##ERROR## {sql_query} Exception: {e}\n"}
+    return winners
