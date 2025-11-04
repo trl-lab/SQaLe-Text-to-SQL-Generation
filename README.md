@@ -123,16 +123,17 @@ The pipeline is modular; individual stages can be rerun or swapped. Paths below 
 - Adjust `--array`, `--start_index`, and `--end_index` to chunk workloads across GPUs.
 - Redirected logs live in `slurm_output/`.
 
-## Troubleshooting
-- **`ModuleNotFoundError: My_ReFoRCE`** – ensure the `ln -s ReFoRCE My_ReFoRCE` symlink exists or refactor imports to `ReFoRCE.*`.
-- **vLLM OOM** – lower `--batch_size`, `--max_tokens`, or switch to a smaller model.
-- **SQLite execution failures** – inspect `.failed.sql` files produced by the schema extender to fix invalid DDL.
-- **Slow token counting** – install `tiktoken` (already included in `conda-env.yml`) for accurate, fast tokenisation.
+## Citation
+If you find SQaLe useful in your research, please cite the following paper:
+```
+@inproceedings{
+  wolff2025SQaLe,
+  title={SQaLe: A large text-to-SQL corpus grounded in real schemas},
+  author={Cornelius Wolff and Daniel Gomm and Madelon Hulsebos},
+  booktitle={Eurips 2025 AI for Tabular Data Workshop},
+  year={2025}
+  }
+```
 
-## Next Steps
-- Add automated regression tests for schema/SQL validators.
-- Publish consolidated dataset cards for each release.
-- Replace the temporary `My_ReFoRCE` alias with a proper package install once naming is finalised.
-
----
-Questions, issues, or contributions are welcome—open a ticket or start a discussion in the repository.
+## License
+This repository is licensed under the GPLv3 License. See `LICENSE` for details.
