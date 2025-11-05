@@ -316,7 +316,7 @@ def main():
         max_tokens=int(args.max_tokens),
         top_k=(args.top_k if args.top_k is not None else -1),
     )
-    llm = LLM(model=args.model, max_model_len=30000, tensor_parallel_size=int(args.tensor_parallel_size))
+    llm = LLM(model=args.model, max_model_len=15000, tensor_parallel_size=int(args.tensor_parallel_size), max_num_seqs= BATCH_SIZE)
 
     work: List[Tuple[str, str, int]] = []
     for file in sql_files:

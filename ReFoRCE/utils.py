@@ -2,6 +2,33 @@ import re
 import sqlite3
 from typing import Any, List, Optional, Sequence, Tuple
 
+def extract_all_blocks(main_content, code_format):
+    sql_blocks = []
+    start = 0
+    
+    while True:
+
+        sql_query_start = main_content.find(f"```{code_format}", start)
+        if sql_query_start == -1:
+            break
+        
+
+        sql_query_end = main_content.find("```", sql_query_start + len(f"```{code_format}"))
+        if sql_query_end == -1:
+            break 
+
+        sql_block = main_content[sql_query_start + len(f"```{code_format}"):sql_query_end].strip()
+        sql_blocks.append(sql_block)
+
+        start = sql_query_end + len("```")
+    
+    return sql_blocks
+
+def extract_code_blocks(text: str, tag: str):
+    pattern = rf"```{tag}\s*\n(.*?)```"
+    matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+    return [match.strip() for match in matches]
+
 def split_sql_statements(sql: str) -> List[str]:
     # Simple splitter that respects semicolons; does not handle CREATE TRIGGER bodies.
     parts: List[str] = []
