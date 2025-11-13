@@ -5,6 +5,10 @@ import sys
 from typing import List, Dict, Any
 import random
 from tqdm import tqdm
+import os
+import subprocess
+import shutil
+import sqlparse
 
 # -- Optional: tiktoken for more realistic token counts (if installed) --
 def _load_tiktoken():
@@ -92,6 +96,13 @@ def _split_top_level_commas(s: str):
         parts.append(''.join(buf).strip())
     return parts
 
+def is_sql_parsable(sql):
+    try:
+        parsed = sqlparse.parse(sql)
+        return len(parsed) > 0
+    except Exception:
+        return False
+
 
 def count_columns_from_schema(schema: str) -> int:
     """Count column definitions inside CREATE TABLE statements."""
@@ -128,16 +139,29 @@ def count_columns_from_schema(schema: str) -> int:
 
     return total_columns
 
+def clean_from_comments(sql: str) -> bool:
+    """Clean SQL by removing single-line comments."""
+    clean_sql = re.sub(r"--[^;]*?(?=(\bSELECT\b|\bWITH\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bFROM\b|\bJOIN\b|;|$))", "", sql, flags=re.IGNORECASE)
+    return clean_sql.strip()
+
 def extend_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     # Map field names
     question = rec.get("prompt", "") or rec.get("question", "") or ""
     query = rec.get("sql_statement", "") or rec.get("query", "") or ""
     schema = rec.get("schema", "") or ""
 
+    query = clean_from_comments(query)
+
     # Skip trivial "SELECT 1;"
     if query.strip().upper() == "SELECT 1;":
-        return None
-
+        return None, "Error generating SQL"
+    
+    if query.strip().upper() == "" or query.strip() == ";" or len(query.strip()) < 20:
+        return None, "Only comments present"
+    
+    if not is_sql_parsable(query):
+        return None, "Error generating SQL"
+    
     # Token counts split + total
     token_count = {
         "question": count_tokens(question),
@@ -160,11 +184,14 @@ def extend_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     out["num_joins"] = num_joins
     out["num_tables"] = num_tables
     out["number_of_columns"] = number_of_columns
-    return out
+    return out, None
 
-def process_stream(instream, outstream):
+def process_stream(instream, outstream, len_of_input):
     results = []
-    for line_no, line in tqdm(enumerate(instream, 1), desc="Processing records"):
+    number_of_no_sql = 0
+    number_of_only_comments = 0
+    progress_bar = tqdm(total=len_of_input, desc="Processing records", unit="B", unit_scale=True)
+    for line_no, line in enumerate(instream, 1):
         line = line.strip()
         if not line:
             continue
@@ -182,9 +209,14 @@ def process_stream(instream, outstream):
             continue
 
         try:
-            out = extend_record(rec)
+            out, err = extend_record(rec)
             if out is not None:
                 results.append(out)
+            else:
+                if err == "Error generating SQL":
+                    number_of_no_sql += 1
+                elif err == "Only comments present":
+                    number_of_only_comments += 1
         except Exception as e:
             err_obj = {
                 "error": "ProcessingError",
@@ -194,6 +226,10 @@ def process_stream(instream, outstream):
             }
             # results.append(err_obj)
             continue
+        finally:
+            progress_bar.update(1)
+
+    progress_bar.close()
 
     # 🔀 Shuffle before writing
     random.shuffle(results)
@@ -210,15 +246,35 @@ def process_stream(instream, outstream):
             print(obj)
             continue
     print(f"Skipped {number_of_skipped} records with question length < 20 or > 1024 characters.", file=sys.stderr)
-
+    print(f"Skipped {number_of_no_sql} records with no SQL generated.", file=sys.stderr)
+    print(f"Skipped {number_of_only_comments} records with only comments present.", file=sys.stderr)
 
 def main():
     parser = argparse.ArgumentParser(
         description="Extend JSONL SQL records: rename fields, add token counts, JOIN count, command list, table count, and column count; skip trivial SELECT 1 queries."
     )
-    parser.add_argument("--input", help="Path to input JSONL file")
-    parser.add_argument("-o", "--output", help="Path to output JSONL file (default: stdout)")
+    parser.add_argument("--input", help="Path to input JSONL file", required=True)
+    parser.add_argument("-o", "--output", help="Path to output JSONL file (default: stdout)", required=False)
     args = parser.parse_args()
+
+    # Try to use `wc -l` for a fast line count when available; fall back to Python otherwise.
+    len_of_input = 0
+    try:
+
+        if shutil.which("wc"):
+            try:
+                res = subprocess.run(["wc", "-l", args.input], capture_output=True, text=True, check=True)
+                len_of_input = int(res.stdout.strip().split()[0])
+            except Exception as e:
+                print(f"Warning: wc -l failed ({e}), falling back to Python line count.", file=sys.stderr)
+        if len_of_input == 0:
+            # Fallback: count lines in Python
+            with open(args.input, "r", encoding="utf-8") as f:
+                for _ in f:
+                    len_of_input += 1
+    except Exception as e:
+        print(f"Warning: error determining input length ({e}), defaulting to 0.", file=sys.stderr)
+        len_of_input = 0
 
     instream = open(args.input, "r", encoding="utf-8")
     if args.output:
@@ -229,7 +285,7 @@ def main():
         close_out = False
 
     try:
-        process_stream(instream, outstream)
+        process_stream(instream, outstream, len_of_input)
     finally:
         instream.close()
         if close_out:
