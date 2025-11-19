@@ -129,12 +129,13 @@ The pipeline is modular; individual stages can be rerun or swapped. Paths below 
 If you find SQaLe useful in your research, please cite the following paper:
 ```
 @inproceedings{
-  wolff2025SQaLe,
-  title={SQaLe: A large text-to-SQL corpus grounded in real schemas},
-  author={Cornelius Wolff and Daniel Gomm and Madelon Hulsebos},
-  booktitle={Eurips 2025 AI for Tabular Data Workshop},
-  year={2025}
-  }
+	wolff2025sqale,
+	title={{SQ}aLe: A large text-to-{SQL} corpus grounded in real schemas},
+	author={Cornelius Wolff and Daniel Gomm and Madelon Hulsebos},
+	booktitle={EurIPS 2025 Workshop: AI for Tabular Data},
+	year={2025},
+	url={https://openreview.net/forum?id=6PsKDjgoEy}
+}
 ```
 
 ## License
