@@ -4,6 +4,8 @@ Composable pipeline for curating large-scale text-to-SQL corpora by extending da
 
 The dataset can be accessed under [trl-lab/SQaLe-text-to-SQL-dataset/](https://huggingface.co/datasets/trl-lab/SQaLe-text-to-SQL-dataset/) on Hugging Face Datasets.
 
+Link to the associated paper: [https://openreview.net/forum?id=6PsKDjgoEy](https://openreview.net/forum?id=6PsKDjgoEy)
+
 ## Highlights
 - Automates schema growth, question generation, SQL synthesis, and quality annotations.
 - Runs locally or on Slurm clusters with GPU-backed vLLM inference.
